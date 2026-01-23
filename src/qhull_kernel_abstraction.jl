@@ -37,15 +37,14 @@ exemple:
 # TODO: move toutes les primitives de scan dans un autre fichier car là ce n'est plus tenable
 # TODO: Faire en sorte d'utiliser l'opérateur d'identité du oplus à la place de 0 pour l'instant...
 @kernel function segmented_scan_inner_block_downsweep!(out, partial_values, partial_flags, offset_block, in_flags, size::Integer, oplus::Function)
-
     global_id = @index(Global)
     thread_id = @index(Local)
     block_id  = @index(Group)
 
      # Load all partial array in shared memory
     temp = @localmem(eltype(partial_values), first(@groupsize()) * 2)
-    input_f = @localmem(eltype(flags), first(@groupsize()) * 2) 
-    f = @localmem(eltype(flags), first(@groupsize()) * 2) 
+    input_f = @localmem(eltype(in_flags), first(@groupsize()) * 2) 
+    f = @localmem(eltype(in_flags), first(@groupsize()) * 2) 
 
     # TODO: Meilleur organisation needed mdr
     if ((2*global_id)-1 >= size)
@@ -316,12 +315,14 @@ function segmented_scan(values, flags, oplus::Function, backward=false, inclusiv
     println("Block last sum:", blocks_last_value, " \nBlock last tree flag: ", blocks_last_tree_flag, " \nBlock last flag: ", blocks_last_flag)
     println("Partial prefix sum: ", partial_values)
     println("Partial flags: ", partial_flags)
+    println("before: ", flags)
+    println("sdfsdf")
 
-    # TODO: On le fait sur CPU pour l'instant move sur CUB pour finir.
     segmented_blocks = segmented_scan_second_level_cpu!(
     blocks_last_value, length(blocks_last_value), blocks_last_flag, blocks_last_tree_flag, oplus)
 
     println("Segmented block prefix sum: ", segmented_blocks)
+    println("after: ", flags)
     # On offset les blocks avec le blocks_last_value
     downsweep_kernell(final_array, partial_values, partial_flags, segmented_blocks, flags, length(partial_values), oplus, ndrange = tuple(nb_blocks * nb_threads_per_block))
     synchronize(backend)
@@ -398,18 +399,18 @@ function compact(b, s, n)
     #sp = segmented_scan()
 end
 
-@kernel function minmax_reduce(values)
-    thread_id = @index(Local)
+@kernel function minmax_reduce(values, output)
     global_id = @index(Global)
-    shared = @localmem(eltype(partial_values), (first(@groupsize(), 2)))
-    blockDimX = first(@groupsize())
+    shared = @localmem( Array{eltype(values), 2}, first(@groupsize()))
 
     # Load to shared memory
     if global_id <= length(values)
-        shared[global_id][1] = values[global_id]
-        shared[global_id][2] = global_id
+        #shared[global_id] = values[global_id]
+        @print("type: ", eltype(shared), " " , eltype(shared[1,1]), "\n")
+        #shared[global_id][1] = values[global_id]
+        #shared[global_id][2] = global_id
     end
-
+    #=
     @synchronize()
 
     # Perform the reduction, returns [(value, index), (value, index)] with(min, max)
@@ -418,11 +419,12 @@ end
         offset = 1 << shift
         if thread_id <= ((first(@groupsize()) * 2) >> (shift+1)) 
             # Todo avoid if, else for min and max
-            shared[thread_id] = min(shared[thread_id][0], shared[thread_id + offset][0])
+            shared[thread_id] = min(shared[thread_id], shared[thread_id + offset])
         end
+        @synchronize()
     end
- 
-
+    # Transfer to output
+    output = shared[1][1]=#
 end
 
 function quick_hull(points)
@@ -459,8 +461,10 @@ compact(compact_bool_data, compact_data, length(compact_bool_data))
 points = [(0, 2), (-2, 0), (0, -2), (2, 0), (3, 3)]
 quick_hull(points)
 
-
+=#
 min_max_values = [10, 3 ,4, 0, 9, 8, 2, 2, 2]
-min_max_values_ker = min_max_values(backend, 9)
-min_max_values_ker(values, ndrange=length(min_max_values)) =#
+min_max_values_ker = minmax_reduce(backend, 9)
+out = -1
+min_max_values_ker(min_max_values, out,  ndrange=length(min_max_values)) 
+println("out is : ", out)
 end
