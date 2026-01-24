@@ -2,6 +2,7 @@ module qhull_kernel_abstraction
 using KernelAbstractions, Polyhedra
 
 export segmented_scan
+export minmax_reduce
 
 ###### Les paramètres ici sont pour tester, ils devront être setup lorsque la librairie.
 backend = CPU()
@@ -400,31 +401,35 @@ function compact(b, s, n)
 end
 
 @kernel function minmax_reduce(values, output)
+    #TODO POWER OF TWO
     global_id = @index(Global)
-    shared = @localmem( Array{eltype(values), 2}, first(@groupsize()))
-
+    thread_id = @index(Local)
+    shared = @localmem(eltype(values), (first(@groupsize()), 2))  # (wg_size, 2)
     # Load to shared memory
     if global_id <= length(values)
-        #shared[global_id] = values[global_id]
-        @print("type: ", eltype(shared), " " , eltype(shared[1,1]), "\n")
-        #shared[global_id][1] = values[global_id]
-        #shared[global_id][2] = global_id
+        shared[thread_id, 1] = values[thread_id]
+        shared[thread_id, 2] = thread_id
     end
-    #=
     @synchronize()
-
     # Perform the reduction, returns [(value, index), (value, index)] with(min, max)
     # Todo loop 
-    for shift = floor(Int64, log2((first(@groupsize()) * 2))):-1:0
+    for shift = floor(Int64, log2((first(@groupsize())))):-1:0
         offset = 1 << shift
-        if thread_id <= ((first(@groupsize()) * 2) >> (shift+1)) 
-            # Todo avoid if, else for min and max
-            shared[thread_id] = min(shared[thread_id], shared[thread_id + offset])
+        if thread_id <= ((first(@groupsize())) >> (shift+1)) 
+            if shared[thread_id, 1] > shared[thread_id + offset, 1]
+                 shared[thread_id, 1] = shared[thread_id + offset, 1]
+                 shared[thread_id, 2] = shared[thread_id + offset, 2]
+            end
         end
         @synchronize()
     end
     # Transfer to output
-    output = shared[1][1]=#
+    @print(shared)
+    if thread_id == 1
+        output[1] = (shared[1, 1], shared[1, 2])
+        @print("\n output : ", output)
+    end
+    
 end
 
 function quick_hull(points)
@@ -462,9 +467,9 @@ points = [(0, 2), (-2, 0), (0, -2), (2, 0), (3, 3)]
 quick_hull(points)
 
 =#
-min_max_values = [10, 3 ,4, 0, 9, 8, 2, 2, 2]
+min_max_values = [10, 3 ,4, 1, 9, 8, 2, 2, 0]
 min_max_values_ker = minmax_reduce(backend, 9)
-out = -1
+out = [(0, 0)] # TODO mieux comprendre là mdr
 min_max_values_ker(min_max_values, out,  ndrange=length(min_max_values)) 
 println("out is : ", out)
 end
