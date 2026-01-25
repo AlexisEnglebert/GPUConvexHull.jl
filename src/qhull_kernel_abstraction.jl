@@ -72,7 +72,7 @@ exemple:
     
     for shift = floor(Int64, log2((first(@groupsize()) * 2))):-1:0
         offset = 1 << shift
-        if thread_id <= ((first(@groupsize()) * 2) >> (shift+1)) 
+        if thread_id <= ((first(@groupsize()) * 2) >> (shift+1)) #TODO ici ça risque de poser prblm (puissance de 2)
             t = temp[offset*(thread_id*2)-offset] # Partie de gauche
             temp[offset*(thread_id*2)-offset] = temp[offset*(thread_id*2)]
 
@@ -268,7 +268,7 @@ end
 end
 
 function segmented_scan(values, flags, oplus::Function, backward=false, inclusive=false)
-  
+    #TODO peut-être pas bon à voir avec la puissance de 2 !!! (et les tests)
     n = length(values)
     nb_threads_per_block = 4
     nb_blocks = cld(n, 2*nb_threads_per_block)
@@ -400,22 +400,26 @@ function compact(b, s, n)
     #sp = segmented_scan()
 end
 
+# TODO multi-block reduce
 @kernel function minmax_reduce(values, output)
-    #TODO POWER OF TWO
+    #TODO POWER OF TWO check ?
     global_id = @index(Global)
     thread_id = @index(Local)
-    shared = @localmem(eltype(values), (first(@groupsize()), 2))  # (wg_size, 2)
+    shared = @localmem(eltype(values), ((first(@groupsize())), 2))  # (wg_size, 2)
+    
     # Load to shared memory
     if global_id <= length(values)
         shared[thread_id, 1] = values[thread_id]
         shared[thread_id, 2] = thread_id
+    else
+         shared[thread_id, 1] = Inf64
+         shared[thread_id, 2] = Inf64
     end
     @synchronize()
     # Perform the reduction, returns [(value, index), (value, index)] with(min, max)
-    # Todo loop 
-    for shift = floor(Int64, log2((first(@groupsize())))):-1:0
+    for shift = ceil(Int64, log2((first(@groupsize())))):-1:0
         offset = 1 << shift
-        if thread_id <= ((first(@groupsize())) >> (shift+1)) 
+        if thread_id ≤ ((first(@groupsize())) >> (shift+1)) # divisé par shift+1 
             if shared[thread_id, 1] > shared[thread_id + offset, 1]
                  shared[thread_id, 1] = shared[thread_id + offset, 1]
                  shared[thread_id, 2] = shared[thread_id + offset, 2]
@@ -424,10 +428,8 @@ end
         @synchronize()
     end
     # Transfer to output
-    @print(shared)
     if thread_id == 1
         output[1] = (shared[1, 1], shared[1, 2])
-        @print("\n output : ", output)
     end
     
 end
@@ -468,7 +470,7 @@ quick_hull(points)
 
 =#
 min_max_values = [10, 3 ,4, 1, 9, 8, 2, 2, 0]
-min_max_values_ker = minmax_reduce(backend, 9)
+min_max_values_ker = minmax_reduce(backend, 16) #Must be a power of two !!!
 out = [(0, 0)] # TODO mieux comprendre là mdr
 min_max_values_ker(min_max_values, out,  ndrange=length(min_max_values)) 
 println("out is : ", out)
