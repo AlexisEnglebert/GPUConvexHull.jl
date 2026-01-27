@@ -1,5 +1,6 @@
 module qhull_kernel_abstraction
 using KernelAbstractions, Polyhedra
+using LinearAlgebra
 
 export segmented_scan
 export minmax_reduce
@@ -391,11 +392,12 @@ function compact(b, s, n)
     p = segmented_scan(b, flags, (a, b) -> a + b) 
     n = p[n]+b[n] # On ajoute le b[n] car on est en exclusive scan =))
     println(p)
-    out_array = fill(0, n)
+    out_array = similar(s, n)
     segment_mask_ker = segment_mask_kernel(backend, 4)
     segment_mask_ker(b, p, s, out_array, ndrange = length(b))
 
     println("Out array is : ", out_array)
+    return out_array
     # TODO: sp ⇐ segmented scan(newSegment)
     #sp = segmented_scan()
 end
@@ -408,19 +410,59 @@ end
     shared = @localmem(eltype(values), ((first(@groupsize())), 2))  # (wg_size, 2)
     
     # Load to shared memory
-    if global_id <= length(values)
+    if thread_id <= length(values)
         shared[thread_id, 1] = values[thread_id]
         shared[thread_id, 2] = thread_id
     else
-         shared[thread_id, 1] = Inf64
-         shared[thread_id, 2] = Inf64
+         shared[thread_id, 1] = typemax(eltype(values))
+         shared[thread_id, 2] = typemax(eltype(values))
     end
     @synchronize()
     # Perform the reduction, returns [(value, index), (value, index)] with(min, max)
     for shift = ceil(Int64, log2((first(@groupsize())))):-1:0
         offset = 1 << shift
         if thread_id ≤ ((first(@groupsize())) >> (shift+1)) # divisé par shift+1 
+
+            # TODO ici on a des bank-conflict possiblement.
             if shared[thread_id, 1] > shared[thread_id + offset, 1]
+                 shared[thread_id, 1] = shared[thread_id + offset, 1]
+                 shared[thread_id, 2] = shared[thread_id + offset, 2]
+            end
+        end
+        @synchronize()
+    end
+
+    # Transfer to output
+    if thread_id == 1
+        output[1] = (shared[1, 1], shared[1, 2])
+    end
+    @synchronize()
+end
+
+@kernel function max_reduce(values, output)
+    #TODO POWER OF TWO check ?
+    global_id = @index(Global)
+    thread_id = @index(Local)
+    shared = @localmem(eltype(values), ((first(@groupsize())), 2))  # (wg_size, 2)
+    #@print("global id : ", global_id , " length of values : ", length(values), "\n")
+    # Load to shared memory
+    if global_id <= length(values)
+        shared[thread_id, 1] = values[global_id]
+        shared[thread_id, 2] = thread_id
+    else
+         #@print(thread_id, " : ", global_id, " : ", " set to min \n")
+         shared[thread_id, 1] = typemin(eltype(values))
+         shared[thread_id, 2] = 0
+    end
+    @synchronize()
+    if thread_id == 1 @print(shared, " ", typemin(eltype(values)), " " , eltype(values), "\n") end
+    # Perform the reduction, returns [(value, index), (value, index)] with(min, max)
+    for shift = ceil(Int64, log2((first(@groupsize())))):-1:0
+        offset = 1 << shift
+        if thread_id ≤ ((first(@groupsize())) >> (shift+1)) # divisé par shift+1 
+
+            # TODO ici on a des bank-conflict possiblement.
+            if shared[thread_id, 1] < shared[thread_id + offset, 1]
                  shared[thread_id, 1] = shared[thread_id + offset, 1]
                  shared[thread_id, 2] = shared[thread_id + offset, 2]
             end
@@ -431,16 +473,77 @@ end
     if thread_id == 1
         output[1] = (shared[1, 1], shared[1, 2])
     end
-    
+    @synchronize()
 end
 
-function quick_hull(points)
-    #presence_flag = fill(1, len(points))
-    # Find min and max point in a given dimension
-    flags = fill(0, length(points))
-    segmented_scan(map((x) -> x[1],points), flags, (a, b) -> min(a, b))
+function compute_hyperplane(points, dimension)
+    num_points = length(points)
+    M = reduce(hcat,points)' # Concat pour faire une matrice 
+    M = hcat(M, ones(dimension))
 
+    U, S, V = svd(M, full=true)
+
+    last_eigen_vector = V[:, end]
+    a = last_eigen_vector[1:end-1]
+    b = last_eigen_vector[end]
+
+    return a, b
+end
+
+function distance_from_hyperplane(points, hyp_points)
+    normal, offset = compute_hyperplane(hyp_points, 2)
+    println("Normal : ", normal, " Offset: ", offset)
+    out_flags = fill(0, length(points))
+    println("distance input points: ", points)
+    # Parallelisable ?
+    for (index, p) in enumerate(points)
+        
+        dist = ((normal' * p) + offset) / norm(normal)
+        if dist > 0
+            out_flags[index] = 1
+        elseif dist < 0
+            out_flags[index] = -1
+        else
+            out_flags[index] = 0
+        end
+        println(index, p, out_flags[index])
+    end
+    println(out_flags)
+    return out_flags
+end
+
+function flag_permute(flags, data, size, n_flags)
+    for i=0:n_flags
+        #  
+    end
+end
+
+function quick_hull(points, dimension)
+    
+    convex_hull_bounds = []
+
+    # Create a simplex by finding min & max points allong all dimensions
+    ker_min = minmax_reduce(backend, 16)
+    ker_max = max_reduce(backend, 16)
+    out_min = [(0, 0)]
+    out_max = [(0, 0)]
+
+    println("Number of threads per workgroups: ", cld(length(points), 16) * 16)
+    ker_min(map((a) -> a[1], points), out_min, ndrange= cld(length(points), 16) * 16)
+    ker_max(map((a) -> a[1], points), out_max, ndrange= cld(length(points), 16) * 16)
+
+    
+    println("min and max points in x : ", out_min, " and ", out_max)
     # Remove from points using compact
+    remove_flags = fill(1, length(points))
+    remove_flags[out_min[1][2]] = 0
+    remove_flags[out_max[1][2]] = 0
+    push!(convex_hull_bounds, points[out_min[1][2]])
+    push!(convex_hull_bounds, points[out_max[1][2]])
+    restant = compact(remove_flags, points, length(points))
+
+    distance_from_hyperplane(restant, convex_hull_bounds)
+    # Now that we have our simplex perfom the algorithm
 
     # TODO utiliser KernelAbstractions.zeros, pour créer des listes dans la mémoire du GPU et 
     # donc ne pas devoir transférer les donnés du CPU au GPU à chaque fois qu'on lance un kernell
@@ -464,11 +567,11 @@ compact_data      = [0, 1, 2, 3, 4, 5, 6, 7]
 #compact_kernell = compact(backend, 4)
 compact(compact_bool_data, compact_data, length(compact_bool_data))
 
-
-points = [(0, 2), (-2, 0), (0, -2), (2, 0), (3, 3)]
-quick_hull(points)
-
 =#
+points = [[0, 2], [-2, 0], [0, -2], [2, 0], [3, 3], [-1, 1]]
+quick_hull(points, 2)
+
+
 min_max_values = [10, 3 ,4, 1, 9, 8, 2, 2, 0]
 min_max_values_ker = minmax_reduce(backend, 16) #Must be a power of two !!!
 out = [(0, 0)] # TODO mieux comprendre là mdr
