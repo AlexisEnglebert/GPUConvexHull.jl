@@ -1,6 +1,7 @@
 module qhull_kernel_abstraction
-using KernelAbstractions, Polyhedra
+using KernelAbstractions
 using LinearAlgebra
+
 
 export segmented_scan
 export minmax_reduce
@@ -42,7 +43,7 @@ exemple:
     global_id = @index(Global)
     thread_id = @index(Local)
     block_id  = @index(Group)
-
+    
      # Load all partial array in shared memory
     temp = @localmem(eltype(partial_values), first(@groupsize()) * 2)
     input_f = @localmem(eltype(in_flags), first(@groupsize()) * 2) 
@@ -270,8 +271,9 @@ end
 
 function segmented_scan(values, flags, oplus::Function, backward=false, inclusive=false)
     #TODO peut-être pas bon à voir avec la puissance de 2 !!! (et les tests)
+    println("----- \n", values, " typeof = ", typeof(values))
     n = length(values)
-    nb_threads_per_block = 4
+    nb_threads_per_block = 8
     nb_blocks = cld(n, 2*nb_threads_per_block)
     reverse_kernell = reverse_kernell!(backend, nb_threads_per_block)
     shift_kernell   = shift_right(backend, nb_threads_per_block) 
@@ -405,7 +407,6 @@ end
 # TODO multi-block reduce
 @kernel function minmax_reduce(values, output)
     #TODO POWER OF TWO check ?
-    global_id = @index(Global)
     thread_id = @index(Local)
     shared = @localmem(eltype(values), ((first(@groupsize())), 2))  # (wg_size, 2)
     
@@ -512,14 +513,84 @@ function distance_from_hyperplane(points, hyp_points)
     return out_flags
 end
 
-function flag_permute(flags, data, size, n_flags)
-    for i=0:n_flags
-        #  
+
+# O(n) :( -> On pourrait le faire en O(log n) sur gpu je pense bien à voir si ça vaut le coups dans le movement des donnés ect...
+# Vu qu'on réduit à chaque fois la taille ça pourrait être inréressant d'avoir un système hybride GPU > threshold au sinon CPU
+function mask(data, pattern) 
+    output = fill(0, length(data))
+    for (index, val) in enumerate(data)
+        if val == pattern output[index] = 1 end
+    end
+    return output
+end
+
+@kernel function flag_permute_kernell(forwardScanArray, backwardScanArray, sh, flags, size, outPermutation)
+    # TODO
+    # On fait la somme de tous les backward scan des flags avant le notre pour trouver l'offset
+    # Je pense que c'est assez innéficace on sait très bien le faire sur GPU non ? 
+    global_id = @index(Global)
+    
+    if global_id ≤ size
+        offset = 0
+        for idx=1 : flags[global_id] 
+            offset += backwardScanArray[global_id, idx]
+        end
+        # TODO: Check la fin car suspect
+        outPermutation[global_id] = offset + sh[global_id] #+ forwardScanArray[flags[global_id], flags[global_id]] # La fin faut check !
     end
 end
 
-function quick_hull(points, dimension)
+@kernel function add_segment_kernel(backawardScanArray, segments, sh, n_flags)
+    global_id = @index(Global)
+    if global_id < length(backawardScanArray)
+        for i=1 : n_flags
+            # TODO Peut être remplacé avec du branchless pour éviter le Masking du gpu à cause du if
+            if backawardScanArray[global_id, i] + sh[global_id] == global_id
+                segments[global_id] = 1
+            end
+        end
+    end
+end
+
+#TODO je pense vraiment qu'on peut optimiser ça et trouver une autre routine ça pourrait faire gagner
+# pas mal de perf je pense vu que c'est une des composante principale
+function flag_permute(flags, segments, data_size, n_flags)
+    maskedArray = Matrix{Int64}(undef, data_size, n_flags)
+    scanArray = Matrix{Int64}(undef, data_size, n_flags)
+    backscanArray = Matrix{Int64}(undef, data_size, n_flags)
+    st = similar(segments)
+    #TODO en parallèle normalement mais bon vu que je pige RIEN à ce qu'on me veut alors je fais en séquentiel pour l'instant
+    for id=1 : length(segments)
+        if segments[id] == 1
+            st[id] = id
+        else
+            st[id] = 0
+        end
+    end
+
+    sh = segmented_scan(st, segments,(a, b) -> a+b, false, true)
+
+
+    for i=1:n_flags
     
+        @views maskedArray[:, i] .= mask(flags, i)
+        @views scanArray[:, i] .=  segmented_scan(maskedArray[:, i], segments, (a, b) -> a+b)
+        @views backscanArray[:, i] .= segmented_scan(scanArray[:, i], segments, (a, b) -> a +b, true, true) 
+    end
+    # Now the flag permute kernell :)
+    outPermutation = similar(flags)
+    flag_permute_kernell(backend, 16)(scanArray, backscanArray, sh, flags, data_size, outPermutation, ndrange=first(size(scanArray)))
+
+    println(scanArray, " length is : ", length(scanArray), " size to cmp ", size(scanArray))
+    # Add segment kernell
+    add_segment_kernel(backend, 16)(backscanArray, segments, sh, n_flags, ndrange=first(size(scanArray)))
+
+    println("Out permutation is :", outPermutation)
+    println("New segments flags: ", segments)
+    
+end
+
+function quick_hull(points, dimension)
     convex_hull_bounds = []
 
     # Create a simplex by finding min & max points allong all dimensions
@@ -542,9 +613,16 @@ function quick_hull(points, dimension)
     push!(convex_hull_bounds, points[out_max[1][2]])
     restant = compact(remove_flags, points, length(points))
 
-    distance_from_hyperplane(restant, convex_hull_bounds)
+
+
+    dist_flags = distance_from_hyperplane(restant, convex_hull_bounds)
     # Now that we have our simplex perfom the algorithm
 
+    #TODO : compact avec les segments
+    temp_segments = fill(0, length(restant))
+
+    flag_permute(dist_flags, temp_segments, length(temp_segments), 2)    
+    
     # TODO utiliser KernelAbstractions.zeros, pour créer des listes dans la mémoire du GPU et 
     # donc ne pas devoir transférer les donnés du CPU au GPU à chaque fois qu'on lance un kernell
 end
