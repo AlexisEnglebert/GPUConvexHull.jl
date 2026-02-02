@@ -405,77 +405,63 @@ function compact(b, s, n)
     #sp = segmented_scan()
 end
 
-# TODO multi-block reduce
-@kernel function minmax_reduce(values, output)
-    #TODO POWER OF TWO check ?
-    thread_id = @index(Local)
-    shared = @localmem(eltype(values), ((first(@groupsize())), 2))  # (wg_size, 2)
-    
-    # Load to shared memory
-    if thread_id <= length(values)
-        shared[thread_id, 1] = values[thread_id]
-        shared[thread_id, 2] = thread_id
-    else
-         shared[thread_id, 1] = typemax(eltype(values))
-         shared[thread_id, 2] = typemax(eltype(values))
-    end
-    @synchronize()
-    # Perform the reduction, returns [(value, index), (value, index)] with(min, max)
-    for shift = ceil(Int64, log2((first(@groupsize())))):-1:0
-        offset = 1 << shift
-        if thread_id ≤ ((first(@groupsize())) >> (shift+1)) # divisé par shift+1 
 
-            # TODO ici on a des bank-conflict possiblement.
-            if shared[thread_id, 1] > shared[thread_id + offset, 1]
-                 shared[thread_id, 1] = shared[thread_id + offset, 1]
-                 shared[thread_id, 2] = shared[thread_id + offset, 2]
-            end
-        end
-        @synchronize()
-    end
-
-    # Transfer to output
-    if thread_id == 1
-        output[1] = (shared[1, 1], shared[1, 2])
-    end
-    @synchronize()
+struct MinMax
+    min
+    imin
+    max
+    imax
 end
 
-@kernel function max_reduce(values, output)
-    #TODO POWER OF TWO check ?
+@kernel function min_max_reduce(values, output, n)
     global_id = @index(Global)
     thread_id = @index(Local)
-    shared = @localmem(eltype(values), ((first(@groupsize())), 2))  # (wg_size, 2)
-    #@print("global id : ", global_id , " length of values : ", length(values), "\n")
-    # Load to shared memory
-    if global_id <= length(values)
-        shared[thread_id, 1] = values[global_id]
-        shared[thread_id, 2] = thread_id
+    block_id  = @index(Group)
+
+    smin  = @localmem(eltype(values), first(@groupsize))
+    smax  = @localmem(eltype(values), first(@groupsize))
+    simin = @localmem(UInt8, first(@groupsize))
+    simax = @localmem(UInt8, first(@groupsize))
+
+    if global_id < n
+        smin[thread_id]  = values[global_id]
+        smax[thread_id]  = values[global_id]
+        simin[thread_id] = global_id
+        simax[thread_id] = global_id
     else
-         #@print(thread_id, " : ", global_id, " : ", " set to min \n")
-         shared[thread_id, 1] = typemin(eltype(values))
-         shared[thread_id, 2] = 0
+        smin[thread_id]  = typemax(eltype(values))
+        smax[thread_id]  = typemin(eltype(values))
+        simin[thread_id] = global_id
+        simax[thread_id] = global_id
     end
+    
     @synchronize()
-    if thread_id == 1 @print(shared, " ", typemin(eltype(values)), " " , eltype(values), "\n") end
-    # Perform the reduction, returns [(value, index), (value, index)] with(min, max)
+
     for shift = ceil(Int64, log2((first(@groupsize())))):-1:0
         offset = 1 << shift
-        if thread_id ≤ ((first(@groupsize())) >> (shift+1)) # divisé par shift+1 
+        if thread_id ≤ ((first(@groupsize())) >> (shift+1))
 
-            # TODO ici on a des bank-conflict possiblement.
-            if shared[thread_id, 1] < shared[thread_id + offset, 1]
-                 shared[thread_id, 1] = shared[thread_id + offset, 1]
-                 shared[thread_id, 2] = shared[thread_id + offset, 2]
+            if smin[thread_id] > smin[thread_id + offset]
+                 smin[thread_id] = smin[thread_id + offset]
+                 simin[thread_id] = simin[thread_id + offset]
             end
+
+            if smax[thread_id] < smax[thread_id + offset]
+                 smax[thread_id] = smax[thread_id + offset]
+                 simax[thread_id] = simax[thread_id + offset]
+            end
+             
         end
         @synchronize()
     end
-    # Transfer to output
+
     if thread_id == 1
-        output[1] = (shared[1, 1], shared[1, 2])
+        output[block_id] = MinMax(smin[1], simin[1], smax[1], simax[1])
     end
-    @synchronize()
+end
+
+function min_max_reduce(values)
+
 end
 
 function compute_hyperplane(points, dimension)
@@ -595,30 +581,27 @@ function flag_permute(flags, segments, data_size, n_flags)
     println("***")
     println("Back array : ", backscanArray)
 
-
 end
 
 function quick_hull(points, dimension)
     convex_hull_bounds = []
 
     # Create a simplex by finding min & max points allong all dimensions
-    ker_min = minmax_reduce(backend, 16)
-    ker_max = max_reduce(backend, 16)
-    out_min = [(0, 0)]
-    out_max = [(0, 0)]
 
-    println("Number of threads per workgroups: ", cld(length(points), 16) * 16)
-    ker_min(map((a) -> a[1], points), out_min, ndrange= cld(length(points), 16) * 16)
-    ker_max(map((a) -> a[1], points), out_max, ndrange= cld(length(points), 16) * 16)
-
+    out_min_max = [MinMax(0, 0, 0, 0)];
     
-    println("min and max points in x : ", out_min, " and ", out_max)
+    println("Number of threads per workgroups: ", cld(length(points), 16) * 16)
+    min_max_reduce(backend, 16)(map((a) -> a[1], points), out_min_max, length(points), ndrange=cld(length(points), 16) * 16)
+    
+    println("min and max points in x : ", out_min_max)
+
+    temp = out_min_max[1]
     # Remove from points using compact
     remove_flags = fill(1, length(points))
-    remove_flags[out_min[1][2]] = 0
-    remove_flags[out_max[1][2]] = 0
-    push!(convex_hull_bounds, points[out_min[1][2]])
-    push!(convex_hull_bounds, points[out_max[1][2]])
+    remove_flags[temp.imin] = 0
+    remove_flags[temp.imax] = 0
+    push!(convex_hull_bounds, points[temp.imin])
+    push!(convex_hull_bounds, points[temp.imax])
     restant = compact(remove_flags, points, length(points))
 
 
@@ -660,10 +643,10 @@ compact(compact_bool_data, compact_data, length(compact_bool_data))
 points = [[0, 2], [-2, 0], [0, -2], [2, 0], [3, 3], [-1, 1]]
 quick_hull(points, 2)
 
-
+#=
 min_max_values = [10, 3 ,4, 1, 9, 8, 2, 2, 0]
 min_max_values_ker = minmax_reduce(backend, 16) #Must be a power of two !!!
 out = [(0, 0)] # TODO mieux comprendre là mdr
 min_max_values_ker(min_max_values, out,  ndrange=length(min_max_values)) 
-println("out is : ", out)
+println("out is : ", out)=#
 end
