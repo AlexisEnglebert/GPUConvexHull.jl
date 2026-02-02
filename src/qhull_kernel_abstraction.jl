@@ -9,7 +9,6 @@ export minmax_reduce
 ###### Les paramètres ici sont pour tester, ils devront être setup lorsque la librairie.
 backend = CPU()
 
-
 """
 Computes inclusive segmented scan for a given ⊕ operation using Multi-block segmented scan algorithm
 to be more generic. from:
@@ -234,13 +233,14 @@ function segmented_scan_second_level_cpu!(block_values, size::Integer, flags, tr
 end
 
 # TODO: n/2 thread
-@kernel function reverse_kernell!(array)
-    global_id = @index(Global)
-    n = length(array)
-    if global_id <= n # FAILSAFE, ça ne devrait pas arriver :o
-        t = array[global_id]
-        array[global_id] = array[n-global_id+1] #PAS BON !!!!!!
-        array[n-global_id+1] = t
+@kernel function reverse_kernel!(a)
+    i = @index(Global)
+    n = length(a)
+    if i <= n ÷ 2
+        j = n - i + 1
+        t = a[i]
+        a[i] = a[j]
+        a[j] = t
     end
 end
 
@@ -275,7 +275,7 @@ function segmented_scan(values, flags, oplus::Function, backward=false, inclusiv
     n = length(values)
     nb_threads_per_block = 8
     nb_blocks = cld(n, 2*nb_threads_per_block)
-    reverse_kernell = reverse_kernell!(backend, nb_threads_per_block)
+    reverse_kernell = reverse_kernel!(backend, nb_threads_per_block)
     shift_kernell   = shift_right(backend, nb_threads_per_block) 
     tmp_flags = []
     if backward
@@ -344,7 +344,7 @@ function segmented_scan(values, flags, oplus::Function, backward=false, inclusiv
         reverse_kernell(tmp_flags, ndrange = size(tmp_flags))
         synchronize(backend)
 
-        flags = tmp_flags # TODO le move en GPU coalescence toussa toussa
+        flags .= tmp_flags # TODO le move en GPU coalescence toussa toussa
     end
     # On fait le downsweep
     return final_array
@@ -391,6 +391,7 @@ julia> a = [1 2; 3 4]
 # TODO: Comprends à quoi sert le `s`
 function compact(b, s, n)
     flags = fill(0, length(b))
+    flags[1] = 1
     p = segmented_scan(b, flags, (a, b) -> a + b) 
     n = p[n]+b[n] # On ajoute le b[n] car on est en exclusive scan =))
     println(p)
@@ -503,7 +504,7 @@ function distance_from_hyperplane(points, hyp_points)
         if dist > 0
             out_flags[index] = 1
         elseif dist < 0
-            out_flags[index] = -1
+            out_flags[index] = 2
         else
             out_flags[index] = 0
         end
@@ -532,11 +533,11 @@ end
     
     if global_id ≤ size
         offset = 0
-        for idx=1 : flags[global_id] 
+        for idx=1 : flags[global_id]-1
             offset += backwardScanArray[global_id, idx]
         end
         # TODO: Check la fin car suspect
-        outPermutation[global_id] = offset + sh[global_id] #+ forwardScanArray[flags[global_id], flags[global_id]] # La fin faut check !
+        outPermutation[global_id] = offset + sh[global_id] + forwardScanArray[global_id, flags[global_id]]
     end
 end
 
@@ -558,6 +559,7 @@ function flag_permute(flags, segments, data_size, n_flags)
     maskedArray = Matrix{Int64}(undef, data_size, n_flags)
     scanArray = Matrix{Int64}(undef, data_size, n_flags)
     backscanArray = Matrix{Int64}(undef, data_size, n_flags)
+    
     st = similar(segments)
     #TODO en parallèle normalement mais bon vu que je pige RIEN à ce qu'on me veut alors je fais en séquentiel pour l'instant
     for id=1 : length(segments)
@@ -570,12 +572,11 @@ function flag_permute(flags, segments, data_size, n_flags)
 
     sh = segmented_scan(st, segments,(a, b) -> a+b, false, true)
 
-
     for i=1:n_flags
     
         @views maskedArray[:, i] .= mask(flags, i)
         @views scanArray[:, i] .=  segmented_scan(maskedArray[:, i], segments, (a, b) -> a+b)
-        @views backscanArray[:, i] .= segmented_scan(scanArray[:, i], segments, (a, b) -> a +b, true, true) 
+        @views backscanArray[:, i] .= segmented_scan(scanArray[:, i], segments, max, true, true) 
     end
     # Now the flag permute kernell :)
     outPermutation = similar(flags)
@@ -587,7 +588,14 @@ function flag_permute(flags, segments, data_size, n_flags)
 
     println("Out permutation is :", outPermutation)
     println("New segments flags: ", segments)
-    
+    println("INPUT FLAG: ", flags)
+    println("Masked Array: ", maskedArray)
+    println("***")
+    println("Scan array :", scanArray)
+    println("***")
+    println("Back array : ", backscanArray)
+
+
 end
 
 function quick_hull(points, dimension)
@@ -620,13 +628,16 @@ function quick_hull(points, dimension)
 
     #TODO : compact avec les segments
     temp_segments = fill(0, length(restant))
+    temp_segments[1] = 1
 
+    #TODO c'est pas juste
     flag_permute(dist_flags, temp_segments, length(temp_segments), 2)    
     
+    # TODO dans la boucle while presque tout se fait côté GPU avec le CUDA array
     # TODO utiliser KernelAbstractions.zeros, pour créer des listes dans la mémoire du GPU et 
     # donc ne pas devoir transférer les donnés du CPU au GPU à chaque fois qu'on lance un kernell
 end
-
+ 
 #= values = [3, 1, 7,  2, 4, 1, 6, 5, 1, 1, 1, 1, 1, 1, 1, 1]
 flags =  [1, 0, 0,  0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 oplus(a, b) = a + b

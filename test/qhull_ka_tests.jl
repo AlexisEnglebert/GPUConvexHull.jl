@@ -18,5 +18,5 @@ end
     data = [1, 2, 3, 4, 0]
     min_max_values_ker(data, out, ndrange=length(data))
     @test out  == [(0, 5)]
-    
+        
 end
