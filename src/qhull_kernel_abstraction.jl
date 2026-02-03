@@ -43,37 +43,41 @@ exemple:
     thread_id = @index(Local)
     block_id  = @index(Group)
     
+    @uniform group_size = first(@groupsize())
+    @uniform tree_power = ceil(Int64, log2(group_size * 2))
+    @uniform tree_size = 1 << tree_power
+
      # Load all partial array in shared memory
-    temp = @localmem(eltype(partial_values), first(@groupsize()) * 2)
-    input_f = @localmem(eltype(in_flags), first(@groupsize()) * 2) 
-    f = @localmem(eltype(in_flags), first(@groupsize()) * 2) 
+    temp = @localmem(eltype(partial_values), tree_size)
+    input_f = @localmem(eltype(in_flags), tree_size) 
+    f = @localmem(eltype(in_flags), tree_size) 
 
-    # TODO: Meilleur organisation needed mdr
-    if ((2*global_id)-1 >= size)
-        temp[(2*thread_id)-1] = 0
-        f[(2*thread_id)-1] = 0
-        input_f[(2*thread_id)-1] = 0
-    else
-        temp[(2*thread_id)-1] = partial_values[(2*global_id)-1]
-        f[(2*thread_id)-1] = partial_flags[(2*global_id)-1]
-        input_f[(2*thread_id)-1] = in_flags[(2*global_id)-1]
-    end
-
-    if ((2 * global_id) >= size)
-        temp[2*thread_id] = 0
-        f[(2*thread_id)] = 0
-        input_f[(2*thread_id)] = 0
-    else
-        temp[2*thread_id] = partial_values[2*global_id]
-        f[2*thread_id] = partial_flags[2*global_id]
-        input_f[2*thread_id] = in_flags[2*global_id]
-    end
-
-    temp[(first(@groupsize()) * 2)] = offset_block[block_id]
+    # Init tout à 0 comme ça on évite de faire une branche pour le padding:))
+    idx1 = (2*thread_id)-1
+    idx2 = 2*thread_id
+    temp[idx1] = 0; f[idx1] = 0; input_f[idx1] = 0
+    temp[idx2] = 0; f[idx2] = 0; input_f[idx2] = 0
     
-    for shift = floor(Int64, log2((first(@groupsize()) * 2))):-1:0
+    if (2*global_id-1) <= size
+        temp[idx1] = partial_values[2*global_id-1]
+        f[idx1] = partial_flags[2*global_id-1]
+        input_f[idx1] = in_flags[2*global_id-1]
+    end
+    
+    if (2*global_id) <= size
+        temp[idx2] = partial_values[2*global_id]
+        f[idx2] = partial_flags[2*global_id]
+        input_f[idx2] = in_flags[2*global_id]
+    end
+
+    @synchronize()
+     if thread_id == 1
+         temp[tree_size] = offset_block[block_id]
+     end
+    
+    for shift in (tree_power-1):-1:0
         offset = 1 << shift
-        if thread_id <= ((first(@groupsize()) * 2) >> (shift+1)) #TODO ici ça risque de poser prblm (puissance de 2)
+        if thread_id <= (tree_size >> (shift + 1))
             t = temp[offset*(thread_id*2)-offset] # Partie de gauche
             temp[offset*(thread_id*2)-offset] = temp[offset*(thread_id*2)]
 
@@ -97,10 +101,6 @@ exemple:
     if ((2*global_id) <= size)
         out[2*global_id] = temp[(2*thread_id)]
     end
-
-    if thread_id == 1
-        @print("Final segmented array is : ", temp, "\n")
-    end
 end
 
 @kernel function segmented_scan_inner_block_upsweep!(partial_values, 
@@ -108,41 +108,36 @@ end
     global_id = @index(Global)
     thread_id = @index(Local)
     block_id  = @index(Group)
-
+    @uniform group_size = first(@groupsize())
+    @uniform tree_power = ceil(Int64, log2(group_size * 2))
+    @uniform tree_size = 1 << tree_power
     # Each thread treats 2 values so in shared block memory there is 2 * block_size elements
-    temp = @localmem(eltype(values), first(@groupsize()) * 2)
-    input_f = @localmem(eltype(flags), first(@groupsize()) * 2) 
-    f = @localmem(eltype(flags), first(@groupsize()) * 2) 
+    temp = @localmem(eltype(values), tree_size)
+    input_f = @localmem(eltype(flags), tree_size) 
+    f = @localmem(eltype(flags), tree_size) 
 
-    if ((2*global_id)-1 >= size)
-        temp[(2*thread_id)-1] = 0
-        f[(2*thread_id)-1] = 0
-        input_f[(2*thread_id)-1] = 0
-    else
-        temp[(2*thread_id)-1] = values[(2*global_id)-1]
-        f[(2*thread_id)-1] = flags[(2*global_id)-1]
-        input_f[(2*thread_id)-1] = flags[(2*global_id)-1]
+    # Init tout à 0 comme ça on évite de faire une branche pour le padding:))
+    idx1 = (2*thread_id)-1
+    idx2 = 2*thread_id
+    temp[idx1] = 0; f[idx1] = 0; input_f[idx1] = 0
+    temp[idx2] = 0; f[idx2] = 0; input_f[idx2] = 0
+
+    if (2*global_id-1) <= size
+        temp[idx1] = values[2*global_id-1]
+        f[idx1] = flags[2*global_id-1]
+        input_f[idx1] = flags[2*global_id-1]
     end
-
-    if ((2 * global_id) >= size)
-        temp[2*thread_id] = 0
-        f[(2*thread_id)] = 0
-        input_f[(2*thread_id)] = 0
-    else
-        temp[2*thread_id] = values[2*global_id]
-        f[2*thread_id] = flags[2*global_id]
-        input_f[2*thread_id] = flags[2*global_id]
+    if (2*global_id) <= size
+        temp[idx2] = values[2*global_id]
+        f[idx2] = flags[2*global_id]
+        input_f[idx2] = flags[2*global_id]
     end
     
     @synchronize()
-    
-    if thread_id == 1
-        @print("Segmented scan block : ",block_id, " got this input", temp, " from :", values, "\n")
-    end
 
-    for shift = 0:floor(Int64, log2(first(@groupsize()) * 2))
+    for shift = 0:(tree_power - 1)
         offset = 1 << shift
-        if thread_id <= ((first(@groupsize()) * 2)  >> (shift+1))
+        if thread_id <= tree_size >> (shift+1)
             if f[offset*(thread_id*2)] == 0
                 temp[offset*(thread_id*2)] = oplus(temp[offset*(thread_id*2)], temp[offset*(thread_id*2)-offset])
             end
@@ -151,11 +146,6 @@ end
         @synchronize()
     end
 
-    if thread_id == 1
-        @print("Computed prefix sum in block: ", temp, "\n")
-    end
-
-        # Fill the out array
     if ((2*global_id)-1 <= size)
         partial_values[(2*global_id)-1] = temp[(2*thread_id)-1]
         partial_flags[(2*global_id)-1] = f[(2*thread_id)-1]
@@ -166,10 +156,9 @@ end
         partial_flags[(2*global_id)] = f[(2*thread_id)]
     end
 
-    @synchronize()
     if thread_id == 1
-        block_values[block_id] = temp[first(@groupsize()) * 2]
-        block_tree_flags[block_id] = f[first(@groupsize()) * 2]
+        block_values[block_id] = temp[tree_size]
+        block_tree_flags[block_id] = f[tree_size]
         block_flags[block_id] = input_f[1]
     end 
    
@@ -192,7 +181,7 @@ function segmented_scan_second_level_cpu!(block_values, size::Integer, flags, tr
     end
 
     # Upsweep :) 
-    for d = 0:m_pow-1
+    for d = 0:(m_pow-1)
         offset = 1 << d
         for k = 0:2*offset:n
             if k+2*offset <= n
@@ -203,12 +192,11 @@ function segmented_scan_second_level_cpu!(block_values, size::Integer, flags, tr
             end
         end
     end
-    println("temp : ", temp)
 
     # Downsweep 
     temp[n] = 0
 
-    for d = m_pow-1:-1:0
+    for d = (m_pow-1):-1:0
         offset = 1 << d
         for k = 0:2*offset:n
             if k+2*offset <= n
@@ -248,15 +236,11 @@ end
     global_id = @index(Global)
     @synchronize()
     n = length(input)
-    if global_id == 1
-        @print("wtf : ", input[4], "\n")
-    end
     if global_id <= n
         if global_id == 1
             output[global_id] = 0
         else
             output[global_id] = input[global_id-1]
-            @print(global_id, " ", output[global_id], " ", input[(global_id-1)], "   ", (global_id-1), "\n")
         end
     end
 end
@@ -284,14 +268,9 @@ function segmented_scan(values, flags, oplus::Function, backward=false, inclusiv
         reverse_kernell(flags, ndrange = size(flags))
         tmp_flags = copy(flags) # TODO: move sur le gpu
         synchronize(backend)
-        println("Reversed flags before shift: ", flags)
-        println("Reversed TMP before shift: ", tmp_flags)
 
         shift_kernell(tmp_flags, flags, ndrange = size(flags))
         synchronize(backend)
-
-        println("Reversed data: ", values)
-        println("Reversed flags: ", flags)
     end
     
     # TODO: Only one GPU memory allocation for this
@@ -316,17 +295,17 @@ function segmented_scan(values, flags, oplus::Function, backward=false, inclusiv
 
     # Ok donc ici on vas faire un "second-level-segmented-scan aussi en mode tree pour pouvoir handle
     # toutes les longueur d'array
-    println("Block last sum:", blocks_last_value, " \nBlock last tree flag: ", blocks_last_tree_flag, " \nBlock last flag: ", blocks_last_flag)
+    #=println("Block last sum:", blocks_last_value, " \nBlock last tree flag: ", blocks_last_tree_flag, " \nBlock last flag: ", blocks_last_flag)
     println("Partial prefix sum: ", partial_values)
     println("Partial flags: ", partial_flags)
     println("before: ", flags)
-    println("sdfsdf")
+    println("sdfsdf")=#
 
     segmented_blocks = segmented_scan_second_level_cpu!(
     blocks_last_value, length(blocks_last_value), blocks_last_flag, blocks_last_tree_flag, oplus)
 
-    println("Segmented block prefix sum: ", segmented_blocks)
-    println("after: ", flags)
+    #=println("Segmented block prefix sum: ", segmented_blocks)
+    println("after: ", flags)=#
     # On offset les blocks avec le blocks_last_value
     downsweep_kernell(final_array, partial_values, partial_flags, segmented_blocks, flags, length(partial_values), oplus, ndrange = tuple(nb_blocks * nb_threads_per_block))
     synchronize(backend)
@@ -406,24 +385,28 @@ function compact(b, s, n)
 end
 
 
-struct MinMax
-    min
-    imin
-    max
-    imax
+struct MinMax{T, I} # Type and Index
+    min::T
+    imin::I
+    max::T
+    imax::I
 end
 
-@kernel function min_max_reduce(values, output, n)
+# On dois définir c'est quoi le zéro de MinMax pour pouvoir gérer ça côté GPU
+# HORRIBLE 1H pour trouver ça, même les template en c++ c'est plus simple mdr
+Base.zero(::Type{MinMax{T, I}}) where {T, I} = MinMax{T, I}(typemax(T), zero(I), typemax(T), zero(I))
+
+@kernel function min_max_reduce_block_kernel(values, output, n)
     global_id = @index(Global)
     thread_id = @index(Local)
     block_id  = @index(Group)
 
     smin  = @localmem(eltype(values), first(@groupsize))
     smax  = @localmem(eltype(values), first(@groupsize))
-    simin = @localmem(UInt8, first(@groupsize))
-    simax = @localmem(UInt8, first(@groupsize))
+    simin = @localmem(UInt32, first(@groupsize))
+    simax = @localmem(UInt32, first(@groupsize))
 
-    if global_id < n
+    if global_id ≤ n
         smin[thread_id]  = values[global_id]
         smax[thread_id]  = values[global_id]
         simin[thread_id] = global_id
@@ -437,38 +420,98 @@ end
     
     @synchronize()
 
-    for shift = ceil(Int64, log2((first(@groupsize())))):-1:0
-        offset = 1 << shift
-        if thread_id ≤ ((first(@groupsize())) >> (shift+1))
-
-            if smin[thread_id] > smin[thread_id + offset]
-                 smin[thread_id] = smin[thread_id + offset]
-                 simin[thread_id] = simin[thread_id + offset]
+    for steps in 1:ceil(Int64, log2((first(@groupsize()))))
+        limit = ceil(Int64, first(@groupsize()) / (2^steps))
+        if thread_id ≤ limit 
+            if @inbounds smin[thread_id] > smin[thread_id + limit]
+                 @inbounds smin[thread_id] = smin[thread_id + limit]
+                 @inbounds simin[thread_id] = simin[thread_id + limit]
             end
 
-            if smax[thread_id] < smax[thread_id + offset]
-                 smax[thread_id] = smax[thread_id + offset]
-                 simax[thread_id] = simax[thread_id + offset]
+            if @inbounds smax[thread_id] < smax[thread_id + limit]
+                 @inbounds smax[thread_id] = smax[thread_id + limit]
+                 @inbounds simax[thread_id] = simax[thread_id + limit]
             end
-             
         end
         @synchronize()
     end
 
     if thread_id == 1
-        output[block_id] = MinMax(smin[1], simin[1], smax[1], simax[1])
+        output[block_id] = MinMax{Int64, UInt32}(smin[1], simin[1], smax[1], simax[1])
+    end
+end
+
+@kernel function min_max_reduce_block_kernel_minmax(values, output, n)
+    global_id = @index(Global)
+    thread_id = @index(Local)
+    block_id  = @index(Group)
+
+    smin  = @localmem(Int64, first(@groupsize))
+    smax  = @localmem(Int64, first(@groupsize))
+    simin = @localmem(UInt32, first(@groupsize))
+    simax = @localmem(UInt32, first(@groupsize))
+
+    if global_id ≤ n
+        smin[thread_id]  = values[global_id].min
+        smax[thread_id]  = values[global_id].max
+        simin[thread_id] = values[global_id].imin
+        simax[thread_id] = values[global_id].imax
+    else
+        smin[thread_id]  = typemax(Float64)
+        smax[thread_id]  = typemin(Float64)
+        simin[thread_id] = 0
+        simax[thread_id] = 0
+    end
+    
+    @synchronize()
+
+    for steps in 1:ceil(Int64, log2((first(@groupsize()))))
+        limit = ceil(Int64, first(@groupsize()) / (2^steps))
+        if thread_id ≤ limit 
+            if @inbounds smin[thread_id] > smin[thread_id + limit]
+                 @inbounds smin[thread_id] = smin[thread_id + limit]
+                 @inbounds simin[thread_id] = simin[thread_id + limit]
+            end
+
+            if @inbounds smax[thread_id] < smax[thread_id + limit]
+                 @inbounds smax[thread_id] = smax[thread_id + limit]
+                 @inbounds simax[thread_id] = simax[thread_id + limit]
+            end
+        end
+        @synchronize()
+    end
+
+    if thread_id == 1
+        output[block_id] = MinMax{Int64, UInt32}(smin[1], simin[1], smax[1], simax[1])
     end
 end
 
 function min_max_reduce(values, workgroupsSize, backend)
     
     n_groups = cld(length(values), workgroupsSize)
-    group_output = fill(MinMax(0, 0, 0, 0), n_groups) # Todo Liste de min_max
-    #TODO est-ce ok ? 
-    min_max_reduce(backend, workgroupsSize)(values, group_output, length(values), ndrange=length(values))
+    partial_minmax_block = KernelAbstractions.zeros(backend, MinMax{eltype(values), UInt32}, n_groups)
+
+    min_max_reduce_block_kernel(backend, workgroupsSize)(values, partial_minmax_block, length(values), ndrange=n_groups*workgroupsSize)
+    synchronize(backend)
 
     # Now merge groups (TODO sur gpu)
-    
+    while(length(partial_minmax_block) > 1)
+        println(partial_minmax_block)
+        println("-------")
+        n_remainder_groups = cld(length(partial_minmax_block), workgroupsSize)
+        println(typeof(partial_minmax_block), " ; ", eltype(partial_minmax_block))
+        # TODO: SPEED UP technique de double buffering
+        remainder_output = KernelAbstractions.zeros(backend, MinMax{eltype(values), UInt32}, n_remainder_groups)
+        min_max_reduce_block_kernel_minmax(backend, workgroupsSize)(partial_minmax_block, remainder_output, length(partial_minmax_block),
+        ndrange=n_remainder_groups*workgroupsSize)
+
+        synchronize(backend)
+        println("REMAINDER : ", remainder_output)
+        println("°°°°s")
+        partial_minmax_block = remainder_output
+    end
+    print("FINAL IS ", partial_minmax_block[1])
+    return partial_minmax_block[1]
 end
 
 function compute_hyperplane(points, dimension)
@@ -604,10 +647,10 @@ function quick_hull(points, dimension)
 
     # Create a simplex by finding min & max points allong all dimensions
 
-    out_min_max = [MinMax(0, 0, 0, 0)];
+    out_min_max = [MinMax{Int64, UInt32}(0, 0, 0, 0)];
     
     println("Number of threads per workgroups: ", cld(length(points), 16) * 16)
-    min_max_reduce(backend, 16)(map((a) -> a[1], points), out_min_max, length(points), ndrange=cld(length(points), 16) * 16)
+    min_max_reduce_block_kernel(backend, 16)(map((a) -> a[1], points), out_min_max, length(points), ndrange=cld(length(points), 16) * 16)
     
     println("min and max points in x : ", out_min_max)
 
@@ -656,8 +699,15 @@ compact_data      = [0, 1, 2, 3, 4, 5, 6, 7]
 compact(compact_bool_data, compact_data, length(compact_bool_data))
 
 =#
+
+
+min_max_data = 1:100
+min_max_reduce(min_max_data, 10, backend)
+
+
 points = [[0, 2], [-2, 0], [0, -2], [2, 0], [3, 3], [-1, 1]]
 quick_hull(points, 2)
+
 
 #=
 min_max_values = [10, 3 ,4, 1, 9, 8, 2, 2, 0]
