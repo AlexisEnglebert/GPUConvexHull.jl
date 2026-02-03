@@ -396,7 +396,7 @@ end
 # HORRIBLE 1H pour trouver ça, même les template en c++ c'est plus simple mdr
 Base.zero(::Type{MinMax{T, I}}) where {T, I} = MinMax{T, I}(typemax(T), zero(I), typemax(T), zero(I))
 
-@kernel function min_max_reduce_block_kernel(values, output, n)
+@kernel function min_max_reduce_block_kernel(values, output, @uniform n)
     global_id = @index(Global)
     thread_id = @index(Local)
     block_id  = @index(Group)
@@ -441,7 +441,7 @@ Base.zero(::Type{MinMax{T, I}}) where {T, I} = MinMax{T, I}(typemax(T), zero(I),
     end
 end
 
-@kernel function min_max_reduce_block_kernel_minmax(values, output, n)
+@kernel function min_max_reduce_block_kernel_minmax(values, output, @uniform n)
     global_id = @index(Global)
     thread_id = @index(Local)
     block_id  = @index(Group)
@@ -494,20 +494,14 @@ function min_max_reduce(values, workgroupsSize, backend)
     min_max_reduce_block_kernel(backend, workgroupsSize)(values, partial_minmax_block, length(values), ndrange=n_groups*workgroupsSize)
     synchronize(backend)
 
-    # Now merge groups (TODO sur gpu)
     while(length(partial_minmax_block) > 1)
-        println(partial_minmax_block)
-        println("-------")
         n_remainder_groups = cld(length(partial_minmax_block), workgroupsSize)
-        println(typeof(partial_minmax_block), " ; ", eltype(partial_minmax_block))
         # TODO: SPEED UP technique de double buffering
         remainder_output = KernelAbstractions.zeros(backend, MinMax{eltype(values), UInt32}, n_remainder_groups)
         min_max_reduce_block_kernel_minmax(backend, workgroupsSize)(partial_minmax_block, remainder_output, length(partial_minmax_block),
         ndrange=n_remainder_groups*workgroupsSize)
 
         synchronize(backend)
-        println("REMAINDER : ", remainder_output)
-        println("°°°°s")
         partial_minmax_block = remainder_output
     end
     print("FINAL IS ", partial_minmax_block[1])
@@ -515,7 +509,6 @@ function min_max_reduce(values, workgroupsSize, backend)
 end
 
 function compute_hyperplane(points, dimension)
-    num_points = length(points)
     M = reduce(hcat,points)' # Concat pour faire une matrice 
     M = hcat(M, ones(dimension))
 
@@ -638,7 +631,6 @@ end
 @kernel function max_distance_kernel(data, flags)
     thread_id = @index(Local)
     global_id = @index(Global)
-    
     
 end
 
