@@ -460,8 +460,15 @@ end
     end
 end
 
-function min_max_reduce(values)
+function min_max_reduce(values, workgroupsSize, backend)
+    
+    n_groups = cld(length(values), workgroupsSize)
+    group_output = fill(MinMax(0, 0, 0, 0), n_groups) # Todo Liste de min_max
+    #TODO est-ce ok ? 
+    min_max_reduce(backend, workgroupsSize)(values, group_output, length(values), ndrange=length(values))
 
+    # Now merge groups (TODO sur gpu)
+    
 end
 
 function compute_hyperplane(points, dimension)
@@ -581,6 +588,15 @@ function flag_permute(flags, segments, data_size, n_flags)
     println("***")
     println("Back array : ", backscanArray)
 
+    return outPermutation
+end
+
+
+@kernel function max_distance_kernel(data, flags)
+    thread_id = @index(Local)
+    global_id = @index(Global)
+    
+    
 end
 
 function quick_hull(points, dimension)
