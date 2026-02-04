@@ -343,7 +343,7 @@ julia> a ....
     i = @index(Global)
     out[i] = typemax(Int64)
     if b[i] == 1
-        out[i] = p[i]
+        out[i] = p[i] + 1
     end
 end
 
@@ -369,23 +369,24 @@ boolean array
 ```
 """
 function compact(flags, segments, data, in_length, dim)
-    tmp_flags = fill(0, in_length)
-    tmp_flags[1] = 1
-    p = segmented_scan(flags, tmp_flags, (a, b) -> a + b) 
+    global_head = KernelAbstractions.zeros(backend, Int, in_length)
+    global_head[1] = 1
+    p = segmented_scan(flags, global_head, (a, b) -> a + b) 
     n = p[in_length]+flags[in_length] # On ajoute le b[n] car on est en exclusive scan =))
     println("IIIIII : " , p)
     println("Flags : ", flags)
-    head_positions  = similar(segments, in_length)
-    segment_mask_kernel(backend, 4)(flags, p, head_positions, ndrange = in_length)
-    println("Segmented mask kernell output: ", head_positions)
-    propagated_head_positions = segmented_scan(head_positions, flags, min, true, true)
-
+    
+    head_indices = KernelAbstractions.allocate(backend, Int64, in_length)
+    segment_mask_kernel(backend, 16)(flags, p, head_indices, ndrange=in_length)
+    println("Segmented mask kernell output: ", head_indices)
+    propagated_heads = segmented_scan(head_indices, segments, min, true, true)
+    
     println("???")
     out_points = KernelAbstractions.allocate(backend, Float64, (dim, n))    
-    permute_data_kernel(backend, 4)(out_points, data, flags, p, dim, ndrange = in_length)
-    println("Out segments is : ", propagated_head_positions)
+    permute_data_kernel(backend, 16)(out_points, data, flags, p, dim, ndrange = in_length)
+    println("Out segments is : ", propagated_heads)
     println("Out data is : ", out_points)
-    return out_points, propagated_head_positions
+    return out_points, propagated_heads
 end
 
 
@@ -513,9 +514,9 @@ function min_max_reduce(values, workgroupsSize, backend)
     return partial_minmax_block[1]
 end
 
-function compute_hyperplane(points, dimension)
-    M = reduce(hcat,points)' # Concat pour faire une matrice 
-    M = hcat(M, ones(dimension))
+function compute_hyperplane(simplex_points)
+    dim = size(simplex_points, 1)
+    M = hcat(simplex_points, ones(dim))
 
     U, S, V = svd(M, full=true)
 
@@ -527,13 +528,13 @@ function compute_hyperplane(points, dimension)
 end
 
 function distance_from_hyperplane(points, hyp_points)
-    normal, offset = compute_hyperplane(hyp_points, 2)
+    normal, offset = compute_hyperplane(hyp_points)
     println("Normal : ", normal, " Offset: ", offset)
     out_flags = fill(0, length(points))
     println("distance input points: ", points)
     # Parallelisable ?
-    for (index, p) in enumerate(points)
-        
+    for (index, p) in enumerate(eachcol(points))
+        println(normal, "    ", p)
         dist = ((normal' * p) + offset) / norm(normal)
         if dist > 0
             out_flags[index] = 1
@@ -647,29 +648,42 @@ end
 
 end
 
+function compute_simplex(points, dim, backend)
+    points_idx = Set{UInt32}()
+    
+    for d in 1:dim
+        res = min_max_reduce(points[d, :], 16, backend)
+        
+        push!(points_idx, res.imin)
+        push!(points_idx, res.imax)
+    end
+    @synchronize
+    return collect(points_idx)
+end
+
+
 function quick_hull(points, n_points, dim)
     convex_hull_bounds = []
     segments = fill(0, n_points)
     segments[1] = 1
     # Create a simplex by finding min & max points allong all dimensions
+    simplex_idx = compute_simplex(points, dim, backend)
+    simplex_matrix = points[:, simplex_idx]
 
-    
-    println("Number of threads per workgroups: ", cld(n_points, 16) * 16)
-    out_min_max = min_max_reduce(points[1,:], 16, backend)
-    
-    println("min and max points in x : ", )
+    println("Simplex index : ", simplex_idx)
+    println("Simplex_matrix: ", simplex_matrix)
 
-    # Remove from points using compact
     remove_flags = fill(1, n_points)
-    remove_flags[out_min_max.imin] = 0
-    remove_flags[out_min_max.imax] = 0
-    push!(convex_hull_bounds, points[out_min_max.imin])
-    push!(convex_hull_bounds, points[out_min_max.imax])
-    restant = compact(remove_flags, segments, points, n_points, dim)
+    for idx in simplex_idx
+        remove_flags[idx] = 0
+    end
+    
+    restant, rest_segment = compact(remove_flags, segments, points, n_points, dim)
 
 
 
-    dist_flags = distance_from_hyperplane(restant, convex_hull_bounds)
+
+    dist_flags = distance_from_hyperplane(restant, simplex_matrix)
     # Now that we have our simplex perfom the algorithm
 
     #TODO : compact avec les segments
