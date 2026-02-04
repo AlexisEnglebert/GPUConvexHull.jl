@@ -3,9 +3,10 @@ using KernelAbstractions
 using LinearAlgebra
 
 include(joinpath(@__DIR__, "..", "src", "ScanPrimitive.jl"))
+include(joinpath(@__DIR__, "..", "src", "MinMaxReduction.jl"))
 using .ScanPrimitive
+using .MinMaxReduction
 
-export minmax_reduce
 
 ###### Les paramètres ici sont pour tester, ils devront être setup lorsque la librairie.
 backend = CPU()
@@ -70,130 +71,6 @@ function compact(flags, segments, data, in_length, dim)
     return out_points, propagated_heads
 end
 
-
-struct MinMax{T, I} # Type and Index
-    min::T
-    imin::I
-    max::T
-    imax::I
-end
-
-# On dois définir c'est quoi le zéro de MinMax pour pouvoir gérer ça côté GPU
-# HORRIBLE 1H pour trouver ça, même les template en c++ c'est plus simple mdr
-Base.zero(::Type{MinMax{T, I}}) where {T, I} = MinMax{T, I}(typemax(T), zero(I), typemax(T), zero(I))
-
-@kernel function min_max_reduce_block_kernel(values, output, @uniform n)
-    global_id = @index(Global)
-    thread_id = @index(Local)
-    block_id  = @index(Group)
-
-    smin  = @localmem(Float64, first(@groupsize))
-    smax  = @localmem(Float64, first(@groupsize))
-    simin = @localmem(UInt32, first(@groupsize))
-    simax = @localmem(UInt32, first(@groupsize))
-
-    if global_id ≤ n
-        smin[thread_id]  = values[global_id]
-        smax[thread_id]  = values[global_id]
-        simin[thread_id] = global_id
-        simax[thread_id] = global_id
-    else
-        smin[thread_id]  = typemax(eltype(values))
-        smax[thread_id]  = typemin(eltype(values))
-        simin[thread_id] = global_id
-        simax[thread_id] = global_id
-    end
-    
-    @synchronize()
-
-    for steps in 1:ceil(Int64, log2((first(@groupsize()))))
-        limit = ceil(Int64, first(@groupsize()) / (2^steps))
-        if thread_id ≤ limit 
-            if @inbounds smin[thread_id] > smin[thread_id + limit]
-                 @inbounds smin[thread_id] = smin[thread_id + limit]
-                 @inbounds simin[thread_id] = simin[thread_id + limit]
-            end
-
-            if @inbounds smax[thread_id] < smax[thread_id + limit]
-                 @inbounds smax[thread_id] = smax[thread_id + limit]
-                 @inbounds simax[thread_id] = simax[thread_id + limit]
-            end
-        end
-        @synchronize()
-    end
-
-    if thread_id == 1
-        output[block_id] = MinMax{Float64, UInt32}(smin[1], simin[1], smax[1], simax[1])
-    end
-end
-
-@kernel function min_max_reduce_block_kernel_minmax(values, output, @uniform n)
-    global_id = @index(Global)
-    thread_id = @index(Local)
-    block_id  = @index(Group)
-    @uniform group_size = first(@groupsize)
-
-    smin  = @localmem(Float64,  group_size)
-    smax  = @localmem(Float64,  group_size)
-    simin = @localmem(UInt32, group_size)
-    simax = @localmem(UInt32, group_size)
-
-    if global_id ≤ n
-        smin[thread_id]  = values[global_id].min
-        smax[thread_id]  = values[global_id].max
-        simin[thread_id] = values[global_id].imin
-        simax[thread_id] = values[global_id].imax
-    else
-        smin[thread_id]  = typemax(Float64)
-        smax[thread_id]  = typemin(Float64)
-        simin[thread_id] = 0
-        simax[thread_id] = 0
-    end
-    
-    @synchronize()
-
-    for steps in 1:ceil(Int64, log2((first(@groupsize()))))
-        limit = ceil(Int64, first(@groupsize()) / (2^steps))
-        if thread_id ≤ limit 
-            if @inbounds smin[thread_id] > smin[thread_id + limit]
-                 @inbounds smin[thread_id] = smin[thread_id + limit]
-                 @inbounds simin[thread_id] = simin[thread_id + limit]
-            end
-
-            if @inbounds smax[thread_id] < smax[thread_id + limit]
-                 @inbounds smax[thread_id] = smax[thread_id + limit]
-                 @inbounds simax[thread_id] = simax[thread_id + limit]
-            end
-        end
-        @synchronize()
-    end
-
-    if thread_id == 1
-        output[block_id] = MinMax{Float64, UInt32}(smin[1], simin[1], smax[1], simax[1])
-    end
-end
-
-function min_max_reduce(values, workgroupsSize, backend)
-    
-    n_groups = cld(length(values), workgroupsSize)
-    partial_minmax_block = KernelAbstractions.zeros(backend, MinMax{eltype(values), UInt32}, n_groups)
-
-    min_max_reduce_block_kernel(backend, workgroupsSize)(values, partial_minmax_block, length(values), ndrange=n_groups*workgroupsSize)
-    synchronize(backend)
-    println("Wesh : ", partial_minmax_block )
-    while(length(partial_minmax_block) > 1)
-        n_remainder_groups = cld(length(partial_minmax_block), workgroupsSize)
-        # TODO: SPEED UP technique de double buffering
-        remainder_output = KernelAbstractions.zeros(backend, MinMax{eltype(values), UInt32}, n_remainder_groups)
-        min_max_reduce_block_kernel_minmax(backend, workgroupsSize)(partial_minmax_block, remainder_output, length(partial_minmax_block),
-        ndrange=n_remainder_groups*workgroupsSize)
-
-        synchronize(backend)
-        partial_minmax_block = remainder_output
-    end
-    print("FINAL IS ", partial_minmax_block[1])
-    return partial_minmax_block[1]
-end
 
 function compute_hyperplane(simplex_points)
     dim = size(simplex_points, 1)
