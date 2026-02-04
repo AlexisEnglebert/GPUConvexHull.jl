@@ -1,4 +1,3 @@
-# Mémoire
+This works is part of my Master thesis "GPU acceleration of convex hull computation".
 
-GPU Quick-hull implementation using julia.
-
+Still in WIP.
