@@ -339,15 +339,22 @@ Nom un peu fancy du papier, ça permet juste de fill l'array out avec les index 
 julia> a ....
 ```
 """
-@kernel function segment_mask_kernel(b, p, data, out)
+@kernel function segment_mask_kernel(b, p, out)
     i = @index(Global)
-    if i <= length(data)
-        if b[i] == 1
-            out[p[i]+1] = data[i]
-        end
+    out[i] = typemax(Int64)
+    if b[i] == 1
+        out[i] = p[i]
     end
 end
 
+@kernel function permute_data_kernel(out, data, flags, perm, @uniform dim)
+    global_id = @index(Global)
+    if flags[global_id] == 1
+        for d in 1:dim
+            out[d, perm[global_id]+1] = data[d, global_id] 
+        end
+    end
+end
 
 """
 compact(b, s, n)
@@ -359,29 +366,26 @@ Compact takes in an array of booleans `b` and
 discards data from `s`, which are marked as false by the
 boolean array
 
-# Examples
-```jldoctest
-julia> a = [1 2; 3 4]
-2×2 Matrix{Int64}:
- 1  2
- 3  4
 ```
 """
-# TODO: Comprends à quoi sert le `s`
-function compact(b, s, n)
-    flags = fill(0, length(b))
-    flags[1] = 1
-    p = segmented_scan(b, flags, (a, b) -> a + b) 
-    n = p[n]+b[n] # On ajoute le b[n] car on est en exclusive scan =))
-    println(p)
-    out_array = similar(s, n)
-    segment_mask_ker = segment_mask_kernel(backend, 4)
-    segment_mask_ker(b, p, s, out_array, ndrange = length(b))
+function compact(flags, segments, data, in_length, dim)
+    tmp_flags = fill(0, in_length)
+    tmp_flags[1] = 1
+    p = segmented_scan(flags, tmp_flags, (a, b) -> a + b) 
+    n = p[in_length]+flags[in_length] # On ajoute le b[n] car on est en exclusive scan =))
+    println("IIIIII : " , p)
+    println("Flags : ", flags)
+    head_positions  = similar(segments, in_length)
+    segment_mask_kernel(backend, 4)(flags, p, head_positions, ndrange = in_length)
+    println("Segmented mask kernell output: ", head_positions)
+    propagated_head_positions = segmented_scan(head_positions, flags, min, true, true)
 
-    println("Out array is : ", out_array)
-    return out_array
-    # TODO: sp ⇐ segmented scan(newSegment)
-    #sp = segmented_scan()
+    println("???")
+    out_points = KernelAbstractions.allocate(backend, Float64, (dim, n))    
+    permute_data_kernel(backend, 4)(out_points, data, flags, p, dim, ndrange = in_length)
+    println("Out segments is : ", propagated_head_positions)
+    println("Out data is : ", out_points)
+    return out_points, propagated_head_positions
 end
 
 
@@ -401,8 +405,8 @@ Base.zero(::Type{MinMax{T, I}}) where {T, I} = MinMax{T, I}(typemax(T), zero(I),
     thread_id = @index(Local)
     block_id  = @index(Group)
 
-    smin  = @localmem(eltype(values), first(@groupsize))
-    smax  = @localmem(eltype(values), first(@groupsize))
+    smin  = @localmem(Float64, first(@groupsize))
+    smax  = @localmem(Float64, first(@groupsize))
     simin = @localmem(UInt32, first(@groupsize))
     simax = @localmem(UInt32, first(@groupsize))
 
@@ -437,7 +441,7 @@ Base.zero(::Type{MinMax{T, I}}) where {T, I} = MinMax{T, I}(typemax(T), zero(I),
     end
 
     if thread_id == 1
-        output[block_id] = MinMax{Int64, UInt32}(smin[1], simin[1], smax[1], simax[1])
+        output[block_id] = MinMax{Float64, UInt32}(smin[1], simin[1], smax[1], simax[1])
     end
 end
 
@@ -445,11 +449,12 @@ end
     global_id = @index(Global)
     thread_id = @index(Local)
     block_id  = @index(Group)
+    @uniform group_size = first(@groupsize)
 
-    smin  = @localmem(Int64, first(@groupsize))
-    smax  = @localmem(Int64, first(@groupsize))
-    simin = @localmem(UInt32, first(@groupsize))
-    simax = @localmem(UInt32, first(@groupsize))
+    smin  = @localmem(Float64,  group_size)
+    smax  = @localmem(Float64,  group_size)
+    simin = @localmem(UInt32, group_size)
+    simax = @localmem(UInt32, group_size)
 
     if global_id ≤ n
         smin[thread_id]  = values[global_id].min
@@ -482,7 +487,7 @@ end
     end
 
     if thread_id == 1
-        output[block_id] = MinMax{Int64, UInt32}(smin[1], simin[1], smax[1], simax[1])
+        output[block_id] = MinMax{Float64, UInt32}(smin[1], simin[1], smax[1], simax[1])
     end
 end
 
@@ -493,7 +498,7 @@ function min_max_reduce(values, workgroupsSize, backend)
 
     min_max_reduce_block_kernel(backend, workgroupsSize)(values, partial_minmax_block, length(values), ndrange=n_groups*workgroupsSize)
     synchronize(backend)
-
+    println("Wesh : ", partial_minmax_block )
     while(length(partial_minmax_block) > 1)
         n_remainder_groups = cld(length(partial_minmax_block), workgroupsSize)
         # TODO: SPEED UP technique de double buffering
@@ -591,7 +596,7 @@ function flag_permute(flags, segments, data_size, n_flags)
     
     st = similar(segments)
     #TODO en parallèle normalement mais bon vu que je pige RIEN à ce qu'on me veut alors je fais en séquentiel pour l'instant
-    for id=1 : length(segments)
+    for id=1:length(segments)
         if segments[id] == 1
             st[id] = id
         else
@@ -602,7 +607,6 @@ function flag_permute(flags, segments, data_size, n_flags)
     sh = segmented_scan(st, segments,(a, b) -> a+b, false, true)
 
     for i=1:n_flags
-    
         @views maskedArray[:, i] .= mask(flags, i)
         @views scanArray[:, i] .=  segmented_scan(maskedArray[:, i], segments, (a, b) -> a+b)
         @views backscanArray[:, i] .= segmented_scan(scanArray[:, i], segments, max, true, true) 
@@ -628,32 +632,40 @@ function flag_permute(flags, segments, data_size, n_flags)
 end
 
 
-@kernel function max_distance_kernel(data, flags)
+@kernel function max_distance_kernel(distances, data, @uniform normal, @uniform offsets, @uniform n_points, @uniform dimensions)
     thread_id = @index(Local)
     global_id = @index(Global)
-    
+
+    if global_id ≤ n
+        #TODO ça on peut le unroll vu que la dimension est fixe normalement
+        dist = 0.0
+        for d=1:dimensions
+            dist += points[d, global_id] * normal[d]
+        end
+        distances[global_id] = dist + offset
+    end
+
 end
 
-function quick_hull(points, dimension)
+function quick_hull(points, n_points, dim)
     convex_hull_bounds = []
-
+    segments = fill(0, n_points)
+    segments[1] = 1
     # Create a simplex by finding min & max points allong all dimensions
 
-    out_min_max = [MinMax{Int64, UInt32}(0, 0, 0, 0)];
     
-    println("Number of threads per workgroups: ", cld(length(points), 16) * 16)
-    min_max_reduce_block_kernel(backend, 16)(map((a) -> a[1], points), out_min_max, length(points), ndrange=cld(length(points), 16) * 16)
+    println("Number of threads per workgroups: ", cld(n_points, 16) * 16)
+    out_min_max = min_max_reduce(points[1,:], 16, backend)
     
-    println("min and max points in x : ", out_min_max)
+    println("min and max points in x : ", )
 
-    temp = out_min_max[1]
     # Remove from points using compact
-    remove_flags = fill(1, length(points))
-    remove_flags[temp.imin] = 0
-    remove_flags[temp.imax] = 0
-    push!(convex_hull_bounds, points[temp.imin])
-    push!(convex_hull_bounds, points[temp.imax])
-    restant = compact(remove_flags, points, length(points))
+    remove_flags = fill(1, n_points)
+    remove_flags[out_min_max.imin] = 0
+    remove_flags[out_min_max.imax] = 0
+    push!(convex_hull_bounds, points[out_min_max.imin])
+    push!(convex_hull_bounds, points[out_min_max.imax])
+    restant = compact(remove_flags, segments, points, n_points, dim)
 
 
 
@@ -693,12 +705,13 @@ compact(compact_bool_data, compact_data, length(compact_bool_data))
 =#
 
 
-min_max_data = 1:100
-min_max_reduce(min_max_data, 10, backend)
+#min_max_data = 1:100
+#min_max_reduce(min_max_data, 10, backend)
 
 
-points = [[0, 2], [-2, 0], [0, -2], [2, 0], [3, 3], [-1, 1]]
-quick_hull(points, 2)
+points = [ 0.0 -2.0  0.0  2.0  3.0 -1.0 ;
+           2.0  0.0 -2.0  0.0  3.0  1.0 ]
+quick_hull(points, 6, 2)
 
 
 #=
