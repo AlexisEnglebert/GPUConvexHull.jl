@@ -79,7 +79,7 @@ end
     global_id = @index(Global)
     thread_id = @index(Local)
     block_id  = @index(Group)
-    
+
     @uniform group_size = first(@groupsize())
     @uniform tree_power = ceil(Int64, log2(group_size * 2))
     @uniform tree_size = 1 << tree_power
