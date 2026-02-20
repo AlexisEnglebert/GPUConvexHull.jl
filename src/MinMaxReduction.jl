@@ -1,10 +1,7 @@
 module MinMaxReduction
 using KernelAbstractions
 
-
-
 export min_max_reduce
-
 
 struct MinMax{T, I} # Type and Index
     min::T
@@ -22,8 +19,8 @@ Base.zero(::Type{MinMax{T, I}}) where {T, I} = MinMax{T, I}(typemax(T), zero(I),
     thread_id = @index(Local)
     block_id  = @index(Group)
 
-    smin  = @localmem(Float64, first(@groupsize))
-    smax  = @localmem(Float64, first(@groupsize))
+    smin  = @localmem(eltype(values), first(@groupsize))
+    smax  = @localmem(eltype(values), first(@groupsize))
     simin = @localmem(UInt32, first(@groupsize))
     simax = @localmem(UInt32, first(@groupsize))
 
@@ -58,7 +55,7 @@ Base.zero(::Type{MinMax{T, I}}) where {T, I} = MinMax{T, I}(typemax(T), zero(I),
     end
 
     if thread_id == 1
-        output[block_id] = MinMax{Float64, UInt32}(smin[1], simin[1], smax[1], simax[1])
+        output[block_id] = MinMax{eltype(values), UInt32}(smin[1], simin[1], smax[1], simax[1])
     end
 end
 
@@ -67,11 +64,11 @@ end
     thread_id = @index(Local)
     block_id  = @index(Group)
     @uniform group_size = first(@groupsize)
-
-    smin  = @localmem(Float64,  group_size)
-    smax  = @localmem(Float64,  group_size)
-    simin = @localmem(UInt32, group_size)
-    simax = @localmem(UInt32, group_size)
+    
+    smin  = @localmem(eltype(values).parameters[1],  group_size)
+    smax  = @localmem(eltype(values).parameters[1],  group_size)
+    simin = @localmem(eltype(values).parameters[2], group_size)
+    simax = @localmem(eltype(values).parameters[2], group_size)
 
     if global_id ≤ n
         smin[thread_id]  = values[global_id].min
@@ -79,8 +76,8 @@ end
         simin[thread_id] = values[global_id].imin
         simax[thread_id] = values[global_id].imax
     else
-        smin[thread_id]  = typemax(Float64)
-        smax[thread_id]  = typemin(Float64)
+        smin[thread_id]  = typemax(eltype(values).parameters[1])
+        smax[thread_id]  = typemin(eltype(values).parameters[1])
         simin[thread_id] = 0
         simax[thread_id] = 0
     end
@@ -104,7 +101,7 @@ end
     end
 
     if thread_id == 1
-        output[block_id] = MinMax{Float64, UInt32}(smin[1], simin[1], smax[1], simax[1])
+        output[block_id] = MinMax{eltype(values).parameters[1], eltype(values).parameters[2]}(smin[1], simin[1], smax[1], simax[1])
     end
 end
 
@@ -115,7 +112,7 @@ function min_max_reduce(values, workgroupsSize, backend)
 
     min_max_reduce_block_kernel(backend, workgroupsSize)(values, partial_minmax_block, length(values), ndrange=n_groups*workgroupsSize)
     synchronize(backend)
-    println("Wesh : ", partial_minmax_block )
+    
     while(length(partial_minmax_block) > 1)
         n_remainder_groups = cld(length(partial_minmax_block), workgroupsSize)
         # TODO: SPEED UP technique de double buffering
@@ -126,7 +123,6 @@ function min_max_reduce(values, workgroupsSize, backend)
         synchronize(backend)
         partial_minmax_block = remainder_output
     end
-    print("FINAL IS ", partial_minmax_block[1])
     return partial_minmax_block[1]
 end
 end

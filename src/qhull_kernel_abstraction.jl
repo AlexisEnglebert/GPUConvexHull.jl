@@ -85,6 +85,11 @@ function compute_hyperplane(simplex_points)
     return a, b
 end
 
+@inline function signed_distance(n::AbstractVector, b::Real, p::AbstractVector)
+    return dot(n, p) + b
+end
+
+
 function distance_from_hyperplane(points, hyp_points)
     normal, offset = compute_hyperplane(hyp_points)
     println("Normal : ", normal, " Offset: ", offset)
@@ -93,7 +98,7 @@ function distance_from_hyperplane(points, hyp_points)
     # Parallelisable ?
     for (index, p) in enumerate(eachcol(points))
         println(normal, "    ", p)
-        dist = ((normal' * p) + offset) / norm(normal)
+        dist = signed_distance(normal, offset, p) / norm(normal)
         if dist > 0
             out_flags[index] = 1
         elseif dist < 0
@@ -202,7 +207,7 @@ end
             dist += points[d, global_id] * normal[d]
         end
         distances[global_id] = dist + offset
-    end
+    ends
 
 end
 
@@ -224,6 +229,7 @@ function quick_hull(points, n_points, dim)
     convex_hull_bounds = []
     segments = fill(0, n_points)
     segments[1] = 1
+
     # Create a simplex by finding min & max points allong all dimensions
     simplex_idx = compute_simplex(points, dim, backend)
     simplex_matrix = points[:, simplex_idx]
@@ -238,9 +244,6 @@ function quick_hull(points, n_points, dim)
     
     restant, rest_segment = compact(remove_flags, segments, points, n_points, dim)
 
-
-
-
     dist_flags = distance_from_hyperplane(restant, simplex_matrix)
     # Now that we have our simplex perfom the algorithm
 
@@ -248,48 +251,16 @@ function quick_hull(points, n_points, dim)
     temp_segments = fill(0, length(restant))
     temp_segments[1] = 1
 
-    #TODO c'est pas juste
     flag_permute(dist_flags, temp_segments, length(temp_segments), 2)    
     
     # TODO dans la boucle while presque tout se fait côté GPU avec le CUDA array
-    # TODO utiliser KernelAbstractions.zeros, pour créer des listes dans la mémoire du GPU et 
-    # donc ne pas devoir transférer les donnés du CPU au GPU à chaque fois qu'on lance un kernell
+    
 end
- 
-#= values = [3, 1, 7,  2, 4, 1, 6, 5, 1, 1, 1, 1, 1, 1, 1, 1]
-flags =  [1, 0, 0,  0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-oplus(a, b) = a + b
-segmented_scan(values, flags, oplus)
-
-
-flag = [0, 0, 0, 1, 0, 0, 0, 0]
-data = [1, 2, 3, 4, 5, 6, 7, 8]
-
-segmented_scan(data, flag, oplus)
-segmented_scan(data, flag, oplus, true)
-segmented_scan(data, flag, oplus, true, true)
-
-compact_bool_data = [1, 0, 1, 0, 1, 1, 1, 0]
-compact_data      = [0, 1, 2, 3, 4, 5, 6, 7]    
-#compact_kernell = compact(backend, 4)
-compact(compact_bool_data, compact_data, length(compact_bool_data))
-
-=#
-
-
-#min_max_data = 1:100
-#min_max_reduce(min_max_data, 10, backend)
 
 
 points = [ 0.0 -2.0  0.0  2.0  3.0 -1.0 ;
            2.0  0.0 -2.0  0.0  3.0  1.0 ]
+
 quick_hull(points, 6, 2)
 
-
-#=
-min_max_values = [10, 3 ,4, 1, 9, 8, 2, 2, 0]
-min_max_values_ker = minmax_reduce(backend, 16) #Must be a power of two !!!
-out = [(0, 0)] # TODO mieux comprendre là mdr
-min_max_values_ker(min_max_values, out,  ndrange=length(min_max_values)) 
-println("out is : ", out)=#
 end
