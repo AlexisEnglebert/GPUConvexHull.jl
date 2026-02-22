@@ -86,7 +86,7 @@ end
 
     for steps in 1:ceil(Int64, log2((first(@groupsize()))))
         limit = ceil(Int64, first(@groupsize()) / (2^steps))
-        if thread_id ≤ limit 
+        if thread_id ≤ limit
             if @inbounds smin[thread_id] > smin[thread_id + limit]
                  @inbounds smin[thread_id] = smin[thread_id + limit]
                  @inbounds simin[thread_id] = simin[thread_id + limit]
@@ -105,6 +105,17 @@ end
     end
 end
 
+"""
+min_max_reduce(values, workgroupsSize, backend)
+
+Performs min max reductions on values.
+
+# Examples
+```jldoctest
+julia> min_max_reduce([1, 2, 3, 4], 4, CPU()) ... 
+Main.MinMaxReduction.MinMax{Int64, UInt32}(1, 0x00000001, 4, 0x00000004) 
+```
+"""
 function min_max_reduce(values, workgroupsSize, backend)
     
     n_groups = cld(length(values), workgroupsSize)

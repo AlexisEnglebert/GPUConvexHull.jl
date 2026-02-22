@@ -93,7 +93,8 @@ end
 function distance_from_hyperplane(points, hyp_points)
     normal, offset = compute_hyperplane(hyp_points)
     println("Normal : ", normal, " Offset: ", offset)
-    out_flags = fill(0, length(points))
+    println("points:  ", points, "size : ", size(points))
+    out_flags = fill(0, size(points)[2])
     println("distance input points: ", points)
     # Parallelisable ?
     for (index, p) in enumerate(eachcol(points))
@@ -108,7 +109,7 @@ function distance_from_hyperplane(points, hyp_points)
         end
         println(index, p, out_flags[index])
     end
-    println(out_flags)
+    println("outflag: ", out_flags)
     return out_flags
 end
 
@@ -151,9 +152,21 @@ end
     end
 end
 
+
 #TODO je pense vraiment qu'on peut optimiser ça et trouver une autre routine ça pourrait faire gagner
 # pas mal de perf je pense vu que c'est une des composante principale
+"""
+flag_permute(flags, segments, data_size, n_flags)
+
+give a permutation vector to permute flags in given segments in order to sort them.
+
+# Examples
+```jldoctest
+julia> flag_permute(.....)
+```
+"""
 function flag_permute(flags, segments, data_size, n_flags)
+    
     maskedArray = Matrix{Int64}(undef, data_size, n_flags)
     scanArray = Matrix{Int64}(undef, data_size, n_flags)
     backscanArray = Matrix{Int64}(undef, data_size, n_flags)
@@ -207,7 +220,7 @@ end
             dist += points[d, global_id] * normal[d]
         end
         distances[global_id] = dist + offset
-    ends
+    end
 
 end
 
@@ -232,6 +245,7 @@ function quick_hull(points, n_points, dim)
 
     # Create a simplex by finding min & max points allong all dimensions
     simplex_idx = compute_simplex(points, dim, backend)
+    simplex_idx = simplex_idx[1:dim] #TODO pour l'instant c'est la hess mais on prends que les d premiers points pour le simplex
     simplex_matrix = points[:, simplex_idx]
 
     println("Simplex index : ", simplex_idx)
@@ -246,9 +260,9 @@ function quick_hull(points, n_points, dim)
 
     dist_flags = distance_from_hyperplane(restant, simplex_matrix)
     # Now that we have our simplex perfom the algorithm
-
+    println("Restant: ", restant)
     #TODO : compact avec les segments
-    temp_segments = fill(0, length(restant))
+    temp_segments = fill(0, size(restant)[2])
     temp_segments[1] = 1
 
     flag_permute(dist_flags, temp_segments, length(temp_segments), 2)    
