@@ -229,7 +229,8 @@ function segmented_scan(backend, values, flags, oplus::Function, backward=false,
     nb_threads_per_block = 8
     nb_blocks = cld(n, 2*nb_threads_per_block)
     reverse_kernell = reverse_kernel!(backend, nb_threads_per_block)
-    shift_kernell   = shift_right(backend, nb_threads_per_block) 
+    #shift_kernell   = shift_right(backend, nb_threads_per_block) TODO: Pas bon ça !!!!! 
+    
     tmp_flags = []
     if backward
         reverse_kernell(values, ndrange = size(values))
@@ -238,7 +239,8 @@ function segmented_scan(backend, values, flags, oplus::Function, backward=false,
         tmp_flags = copy(flags) # TODO: move sur le gpu
         synchronize(backend)
 
-        shift_kernell(tmp_flags, flags, ndrange = size(flags))
+        #shift_kernell(tmp_flags, flags, ndrange = size(flags))
+        circshift!(flags, 1) # TODO GPU
         synchronize(backend)
     end
     
@@ -250,8 +252,6 @@ function segmented_scan(backend, values, flags, oplus::Function, backward=false,
     blocks_last_tree_flag = fill(0, nb_blocks)
     final_array           = fill(0, size(values))
     
-
-
     upsweep_kernell = segmented_scan_inner_block_upsweep!(backend, nb_threads_per_block)    
     downsweep_kernell = segmented_scan_inner_block_downsweep!(backend, nb_threads_per_block)
     inclusive_kernell = inclusive_kernell!(backend, nb_threads_per_block)
@@ -279,6 +279,8 @@ function segmented_scan(backend, values, flags, oplus::Function, backward=false,
         reverse_kernell(values, ndrange = size(values))
         synchronize(backend)
         reverse_kernell(tmp_flags, ndrange = size(tmp_flags))
+        synchronize(backend)
+        reverse_kernell(final_array, ndrange = size(values))
         synchronize(backend)
 
         flags .= tmp_flags # TODO le move en GPU coalescence toussa toussa
