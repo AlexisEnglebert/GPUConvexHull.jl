@@ -64,7 +64,7 @@ function compact(flags, segments, data, in_length, dim)
     propagated_heads = segmented_scan(backend, head_indices, segments, min, true, true)
     
     println("???")
-    out_points = KernelAbstractions.allocate(backend, Float64, (dim, n))    
+    out_points = KernelAbstractions.allocate(backend, Float64, Int.((dim, n)))    
     permute_data_kernel(backend, 16)(out_points, data, flags, p, dim, ndrange = in_length)
     println("Out segments is : ", propagated_heads)
     println("Out data is : ", out_points)
@@ -170,7 +170,7 @@ julia> flag_permute(.....)
 ```
 """
 function flag_permute(flags, segments, data_size, n_flags, segments_start)
-    
+
     maskedArray = Matrix{Int64}(undef, data_size, n_flags)
     scanArray = Matrix{Int64}(undef, data_size, n_flags)
     backscanArray = Matrix{Int64}(undef, data_size, n_flags)
@@ -247,6 +247,76 @@ function compute_simplex(points, dim, backend)
     return collect(points_idx)
 end
 
+@kernel function permute_points_kernel(out, data, perm, @uniform dim)
+    global_id = @index(Global)
+    for d in 1:dim
+        out[d, perm[global_id]] = data[d, global_id]
+    end
+end
+
+function permute_points(backend, points, perm, dim)
+    out = KernelAbstractions.allocate(backend, Float64, (dim, size(points, 2)))
+    permute_points_kernel(backend, 16)(out, points, perm, dim, ndrange=size(points, 2))
+    return out
+end
+
+
+function propagate_segment_idx(segments)
+    n = length(segments)
+    global_head = KernelAbstractions.zeros(backend, Int, n)
+    global_head[1] = 1
+    seg_id = segmented_scan(backend, segments, global_head, (a, b) -> a + b, false, true)
+    synchronize(backend)
+    return seg_id, seg_id[n]
+end
+
+@kernel function distance_to_face_kernel(distances, points, seg_id, normals, offsets, @uniform dim)
+    gid = @index(Global)
+    n = length(seg_id)
+    if gid <= n
+        sid = seg_id[gid]
+        acc = 0.0
+        for d in 1:dim
+            acc += points[d, gid] * normals[d, sid]
+        end
+        distances[gid] = acc + offsets[sid]
+    end
+end
+
+@inline function oriented_hyperplane_with_inside(face, inside_point)
+    n, b = compute_hyperplane(face)
+    if signed_distance(n, b, inside_point) > 0
+        n = -n
+        b = -b
+    end
+
+    return n, b
+end
+
+function rebuild_face_hyperplanes(face_points, inside_point, dim)
+    n_segments = length(face_points)
+    normals = KernelAbstractions.allocate(backend, Float64, (dim, n_segments))
+    offsets = KernelAbstractions.allocate(backend, Float64, n_segments)
+    for id in 1:n_segments
+        normal, offset = oriented_hyperplane_with_inside(face_points[id], inside_point)
+        normals[:, id] = normal
+        offsets[id] = offset
+    end
+    synchronize(backend)
+    return normals, offsets
+end
+
+@kernel function mark_farthest_candidate_kernel(cand_idx, distances, seg_max, @uniform eps)
+    i = @index(Global)
+    if i <= length(cand_idx)
+        m = seg_max[i]
+        if m > 0 && abs(distances[i] - m) <= eps
+            cand_idx[i] = i
+        else
+            cand_idx[i] = 0
+        end
+    end
+end
 
 function quick_hull(points, n_points, dim)
     convex_hull_bounds = []
@@ -276,14 +346,48 @@ function quick_hull(points, n_points, dim)
     temp_segments = fill(0, size(restant)[2])
     temp_segments[1] = 1
 
-    flag_permute(dist_flags, temp_segments, length(temp_segments), 2, segments_start)    
+    outPermutation = flag_permute(dist_flags, temp_segments, length(temp_segments), 2, segments_start)    
+    restant = permute_points(backend, restant, outPermutation, dim)
 
-    # TODO dans la boucle while presque tout se fait côté GPU avec le CUDA array
-    
-    #while true
-        # TODO: try to accelerate segment with GPU
+    println("Restant après permutation: ", restant)
+    face_points = [simplex_matrix for _ in 1:3]
+    inside_point = vec(sum(points; dims=2) ./ n_points)
+    face_normals, face_offsets = rebuild_face_hyperplanes(face_points, inside_point, dim)
 
-    #end
+    while size(restant, 2) > 0
+        # For each segments we compute the hyperplane corresponding to them.
+        seg_id, n_segs = propagate_segment_idx(temp_segments)
+        n = size(restant, 2)
+
+        if n_segs == 0
+            break
+        end
+        
+        distances = KernelAbstractions.allocate(backend, Float64, n)
+        distance_to_face_kernel(backend, 16)(distances, restant, seg_id, face_normals, face_offsets, dim, ndrange=n)
+        synchronize(backend)
+        
+        println(distances)
+        println(temp_segments)
+        
+
+        # On propage le point le plus loins à travers le segement (forward + backward pass)
+        prefix_max = segmented_scan(backend, distances, temp_segments, max,  false, true, typemin(Float64))
+        seg_max    = segmented_scan(backend, prefix_max, temp_segments, max, true,  true, typemin(Float64))
+        
+        println(prefix_max)
+        println(seg_max)
+        println(temp_segments)
+
+
+        cand_idx = KernelAbstractions.allocate(backend, Int64, n)
+        mark_farthest_candidate_kernel(backend, 16)(cand_idx, distances, seg_max, 1e-12, ndrange=n)
+        synchronize(backend)
+
+        prefix_far = segmented_scan(backend, cand_idx, temp_segments, max, false, true)
+        far_idx_p  = segmented_scan(backend, prefix_far, temp_segments, max, true,  true)
+
+    end
 end
 
 

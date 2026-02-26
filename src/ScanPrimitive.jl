@@ -9,7 +9,7 @@ export segmented_scan
 # TODO: être consitant dans le nom des choses !!!
 # TODO: move toutes les primitives de scan dans un autre fichier car là ce n'est plus tenable
 # TODO: Faire en sorte d'utiliser l'opérateur d'identité du oplus à la place de 0 pour l'instant...
-@kernel function segmented_scan_inner_block_downsweep!(out, partial_values, partial_flags, offset_block, in_flags, size::Integer, oplus::Function)
+@kernel function segmented_scan_inner_block_downsweep!(out, partial_values, partial_flags, offset_block, in_flags, size::Integer, oplus::Function, identity::Number = 0)
     global_id = @index(Global)
     thread_id = @index(Local)
     block_id  = @index(Group)
@@ -26,8 +26,11 @@ export segmented_scan
     # Init tout à 0 comme ça on évite de faire une branche pour le padding:))
     idx1 = (2*thread_id)-1
     idx2 = 2*thread_id
-    temp[idx1] = 0; f[idx1] = 0; input_f[idx1] = 0
-    temp[idx2] = 0; f[idx2] = 0; input_f[idx2] = 0
+    
+    temp[idx1] = identity; f[idx1] = 0; input_f[idx1] = 0
+    temp[idx2] = identity; f[idx2] = 0; input_f[idx2] = 0
+    
+
     
     if (2*global_id-1) <= size
         temp[idx1] = partial_values[2*global_id-1]
@@ -53,7 +56,7 @@ export segmented_scan
             temp[offset*(thread_id*2)-offset] = temp[offset*(thread_id*2)]
 
             if input_f[offset*(thread_id*2)-offset+1] == 1
-                temp[offset*(thread_id*2)] = 0 
+                temp[offset*(thread_id*2)] = identity 
             elseif f[offset*(thread_id*2)-offset] == 1
                 temp[offset*(thread_id*2)] = t
             else
@@ -75,7 +78,7 @@ export segmented_scan
 end
 
 @kernel function segmented_scan_inner_block_upsweep!(partial_values, 
-    partial_flags, block_values, block_tree_flags, block_flags, values, size::Integer, flags, oplus::Function)
+    partial_flags, block_values, block_tree_flags, block_flags, values, size::Integer, flags, oplus::Function, identity::Number = 0)
     global_id = @index(Global)
     thread_id = @index(Local)
     block_id  = @index(Group)
@@ -92,8 +95,8 @@ end
     # Init tout à 0 comme ça on évite de faire une branche pour le padding:))
     idx1 = (2*thread_id)-1
     idx2 = 2*thread_id
-    temp[idx1] = 0; f[idx1] = 0; input_f[idx1] = 0
-    temp[idx2] = 0; f[idx2] = 0; input_f[idx2] = 0
+    temp[idx1] = identity; f[idx1] = 0; input_f[idx1] = 0
+    temp[idx2] = identity; f[idx2] = 0; input_f[idx2] = 0
 
     if (2*global_id-1) <= size
         temp[idx1] = values[2*global_id-1]
@@ -137,13 +140,13 @@ end
    
 end
 
-function segmented_scan_second_level_cpu!(block_values, size::Integer, flags, tree_flags, oplus::Function)
+function segmented_scan_second_level_cpu!(block_values, size::Integer, flags, tree_flags, oplus::Function, identity::Number = 0.0)
     
     # Values doit être une puissance de 2
     m_pow = ceil(Int, log2(size))
     n = 1 << m_pow
     
-    temp = fill(zero(eltype(block_values)), n)
+    temp = fill(identity, n)
     f    = fill(zero(eltype(tree_flags)), n)
     fi   = fill(one(eltype(flags)), n)
 
@@ -167,7 +170,7 @@ function segmented_scan_second_level_cpu!(block_values, size::Integer, flags, tr
     end
 
     # Downsweep 
-    temp[n] = 0
+    temp[n] = identity
 
     for d = (m_pow-1):-1:0
         offset = 1 << d
@@ -177,7 +180,7 @@ function segmented_scan_second_level_cpu!(block_values, size::Integer, flags, tr
                 temp[k+offset] = temp[k+2*offset] 
 
                 if fi[k+offset+1] == 1
-                    temp[k+2*offset] = 0
+                    temp[k+2*offset] = identity
                 elseif f[k+offset] == 1
                     temp[k+2*offset] = t
                 else
@@ -224,7 +227,7 @@ end
     end
 end
 
-function segmented_scan(backend, values, flags, oplus::Function, backward=false, inclusive=false)
+function segmented_scan(backend, values, flags, oplus::Function, backward=false, inclusive=false, identity::Number=0)
    n = length(values)
     nb_threads_per_block = 8
     nb_blocks = cld(n, 2*nb_threads_per_block)
@@ -245,29 +248,28 @@ function segmented_scan(backend, values, flags, oplus::Function, backward=false,
     end
     
     # TODO: Only one GPU memory allocation for this
-    partial_values        = fill(zero(eltype(values)), size(values))
-    partial_flags         = fill(zero(eltype(flags)),  size(values))
-    blocks_last_value     = fill(zero(eltype(values)), nb_blocks)
-    blocks_last_flag      = fill(zero(eltype(flags)),  nb_blocks)
-    blocks_last_tree_flag = fill(zero(eltype(flags)),  nb_blocks)
-    final_array           = fill(zero(eltype(values)), size(values))
+    partial_values        = fill(identity, Int(length(values)))
+    partial_flags         = fill(zero(eltype(flags)),  Int(length(values)))
+    blocks_last_value     = fill(identity, Int(nb_blocks))
+    blocks_last_flag      = fill(zero(eltype(flags)),  Int(nb_blocks))
+    blocks_last_tree_flag = fill(zero(eltype(flags)),  Int(nb_blocks))
+    final_array           = fill(identity, Int(length(values)))
     
     upsweep_kernell = segmented_scan_inner_block_upsweep!(backend, nb_threads_per_block)    
     downsweep_kernell = segmented_scan_inner_block_downsweep!(backend, nb_threads_per_block)
     inclusive_kernell = inclusive_kernell!(backend, nb_threads_per_block)
 
-    upsweep_kernell(partial_values, partial_flags, blocks_last_value,
-    blocks_last_tree_flag, blocks_last_flag, values, length(values), 
-    flags, oplus, ndrange = tuple(nb_blocks * nb_threads_per_block))
+   
+    upsweep_kernell(partial_values, partial_flags, blocks_last_value, blocks_last_tree_flag, blocks_last_flag, values, length(values), 
+    flags, oplus, identity, ndrange = tuple(nb_blocks * nb_threads_per_block))
     
     synchronize(backend)
 
-
     segmented_blocks = segmented_scan_second_level_cpu!(
-    blocks_last_value, length(blocks_last_value), blocks_last_flag, blocks_last_tree_flag, oplus)
+    blocks_last_value, length(blocks_last_value), blocks_last_flag, blocks_last_tree_flag, oplus, identity)
 
 
-    downsweep_kernell(final_array, partial_values, partial_flags, segmented_blocks, flags, length(partial_values), oplus, ndrange = tuple(nb_blocks * nb_threads_per_block))
+    downsweep_kernell(final_array, partial_values, partial_flags, segmented_blocks, flags, length(partial_values), oplus, identity, ndrange = tuple(nb_blocks * nb_threads_per_block))
     synchronize(backend)
 
     if inclusive
