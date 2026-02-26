@@ -142,13 +142,15 @@ end
     end
 end
 
-@kernel function add_segment_kernel(backawardScanArray, segments, sh, n_flags)
-    global_id = @index(Global)
-    if global_id < length(backawardScanArray)
-        for i=1 : n_flags
-            # TODO Peut être remplacé avec du branchless pour éviter le Masking du gpu à cause du if
-            if backawardScanArray[global_id, i] + sh[global_id] == global_id
-                segments[global_id] = 1
+@kernel function add_segment_kernel(backscanArray, segments, sh, n_flags)
+    id = @index(Global)
+
+    if id <= size(backscanArray, 1)
+        loc = 0
+        for i = 1:(n_flags-1)
+            loc += backscanArray[id, i]
+            if loc > 0 && (sh[id] + loc) == id
+                segments[id] = 1
             end
         end
     end
