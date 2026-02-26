@@ -143,9 +143,9 @@ function segmented_scan_second_level_cpu!(block_values, size::Integer, flags, tr
     m_pow = ceil(Int, log2(size))
     n = 1 << m_pow
     
-    temp = fill(0, n)
-    f    = fill(0, n)
-    fi   = fill(1, n)
+    temp = fill(zero(eltype(block_values)), n)
+    f    = fill(zero(eltype(tree_flags)), n)
+    fi   = fill(one(eltype(flags)), n)
 
     for i = 1:size
         temp[i] = block_values[i]
@@ -245,12 +245,12 @@ function segmented_scan(backend, values, flags, oplus::Function, backward=false,
     end
     
     # TODO: Only one GPU memory allocation for this
-    partial_values        = fill(0, size(values))
-    partial_flags         = fill(0, size(values))
-    blocks_last_value     = fill(0, nb_blocks)
-    blocks_last_flag      = fill(0, nb_blocks)
-    blocks_last_tree_flag = fill(0, nb_blocks)
-    final_array           = fill(0, size(values))
+    partial_values        = fill(zero(eltype(values)), size(values))
+    partial_flags         = fill(zero(eltype(flags)),  size(values))
+    blocks_last_value     = fill(zero(eltype(values)), nb_blocks)
+    blocks_last_flag      = fill(zero(eltype(flags)),  nb_blocks)
+    blocks_last_tree_flag = fill(zero(eltype(flags)),  nb_blocks)
+    final_array           = fill(zero(eltype(values)), size(values))
     
     upsweep_kernell = segmented_scan_inner_block_upsweep!(backend, nb_threads_per_block)    
     downsweep_kernell = segmented_scan_inner_block_downsweep!(backend, nb_threads_per_block)
