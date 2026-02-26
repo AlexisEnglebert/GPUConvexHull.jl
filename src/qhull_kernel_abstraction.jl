@@ -74,7 +74,7 @@ end
 
 function compute_hyperplane(simplex_points)
     dim = size(simplex_points, 1)
-    M = hcat(simplex_points, ones(dim))
+    M = hcat(simplex_points', ones(dim))
 
     U, S, V = svd(M, full=true)
 
@@ -91,15 +91,17 @@ end
 
 
 function distance_from_hyperplane(points, hyp_points)
+    #println("Hyp points : ", hyp_points)
     normal, offset = compute_hyperplane(hyp_points)
-    println("Normal : ", normal, " Offset: ", offset)
-    println("points:  ", points, "size : ", size(points))
+    #println("Normal : ", normal, " Offset: ", offset)
+    #println("points:  ", points, "size : ", size(points))
     out_flags = fill(0, size(points)[2])
-    println("distance input points: ", points)
+    #println("distance input points: ", points)
     # Parallelisable ?
     for (index, p) in enumerate(eachcol(points))
-        println(normal, "    ", p)
         dist = signed_distance(normal, offset, p) / norm(normal)
+        #println(normal, "    ", p, dist)
+
         if dist > 0
             out_flags[index] = 1
         elseif dist < 0
@@ -165,12 +167,17 @@ give a permutation vector to permute flags in given segments in order to sort th
 julia> flag_permute(.....)
 ```
 """
-function flag_permute(flags, segments, data_size, n_flags)
+function flag_permute(flags, segments, data_size, n_flags, segments_start)
     
     maskedArray = Matrix{Int64}(undef, data_size, n_flags)
     scanArray = Matrix{Int64}(undef, data_size, n_flags)
     backscanArray = Matrix{Int64}(undef, data_size, n_flags)
     
+    println("-- Flag permute with input --")
+    println(flags)
+    println(segments)
+
+
     st = similar(segments)
     #TODO en parallèle normalement mais bon vu que je pige RIEN à ce qu'on me veut alors je fais en séquentiel pour l'instant
     for id=1:length(segments)
@@ -178,7 +185,7 @@ function flag_permute(flags, segments, data_size, n_flags)
             st[id] = id
         else
             st[id] = 0
-        end
+        end 
     end
 
     sh = segmented_scan(backend, st, segments,(a, b) -> a+b, false, true)
@@ -188,11 +195,12 @@ function flag_permute(flags, segments, data_size, n_flags)
         @views scanArray[:, i] .=  segmented_scan(backend, maskedArray[:, i], segments, (a, b) -> a+b)
         @views backscanArray[:, i] .= segmented_scan(backend, scanArray[:, i], segments, max, true, true) 
     end
+
     # Now the flag permute kernell :)
     outPermutation = similar(flags)
     flag_permute_kernell(backend, 16)(scanArray, backscanArray, sh, flags, data_size, outPermutation, ndrange=first(size(scanArray)))
 
-    println(scanArray, " length is : ", length(scanArray), " size to cmp ", size(scanArray))
+    #println(scanArray, " length is : ", length(scanArray), " size to cmp ", size(scanArray))
     # Add segment kernell
     add_segment_kernel(backend, 16)(backscanArray, segments, sh, n_flags, ndrange=first(size(scanArray)))
 
@@ -242,6 +250,7 @@ function quick_hull(points, n_points, dim)
     convex_hull_bounds = []
     segments = fill(0, n_points)
     segments[1] = 1
+    segments_start = [1]
 
     # Create a simplex by finding min & max points allong all dimensions
     simplex_idx = compute_simplex(points, dim, backend)
@@ -265,10 +274,14 @@ function quick_hull(points, n_points, dim)
     temp_segments = fill(0, size(restant)[2])
     temp_segments[1] = 1
 
-    flag_permute(dist_flags, temp_segments, length(temp_segments), 2)    
-    
+    flag_permute(dist_flags, temp_segments, length(temp_segments), 2, segments_start)    
+
     # TODO dans la boucle while presque tout se fait côté GPU avec le CUDA array
     
+    #while true
+        # TODO: try to accelerate segment with GPU
+
+    #end
 end
 
 
