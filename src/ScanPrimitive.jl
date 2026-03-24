@@ -29,7 +29,6 @@ export segmented_scan
     
     temp[idx1] = identity; f[idx1] = 0; input_f[idx1] = 0
     temp[idx2] = identity; f[idx2] = 0; input_f[idx2] = 0
-    
 
     
     if (2*global_id-1) <= size
@@ -140,7 +139,7 @@ end
    
 end
 
-function segmented_scan_second_level_cpu!(block_values, size::Integer, flags, tree_flags, oplus::Function, identity::Number = 0.0)
+function segmented_scan_second_level_cpu!(block_values, size::Integer, flags, tree_flags, oplus::Function, identity::Number = 0)
     
     # Values doit être une puissance de 2
     m_pow = ceil(Int, log2(size))
@@ -227,7 +226,18 @@ end
     end
 end
 
-function segmented_scan(backend, values, flags, oplus::Function, backward=false, inclusive=false, identity::Number=0)
+"""
+segmented_scan(backend, values, flags, oplus::Function; backward=false, inclusive=false, identity::Number=0)
+
+Performs a segmented scan, returns the segmented scan array.
+
+# Examples
+```jldoctest
+julia> segmented_scan() 
+```
+"""
+
+function segmented_scan(backend, values, flags, oplus::Function; backward=false, inclusive=false, identity::Number=0)
    n = length(values)
     nb_threads_per_block = 8
     nb_blocks = cld(n, 2*nb_threads_per_block)
@@ -267,7 +277,6 @@ function segmented_scan(backend, values, flags, oplus::Function, backward=false,
 
     segmented_blocks = segmented_scan_second_level_cpu!(
     blocks_last_value, length(blocks_last_value), blocks_last_flag, blocks_last_tree_flag, oplus, identity)
-
 
     downsweep_kernell(final_array, partial_values, partial_flags, segmented_blocks, flags, length(partial_values), oplus, identity, ndrange = tuple(nb_blocks * nb_threads_per_block))
     synchronize(backend)
