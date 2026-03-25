@@ -1,6 +1,7 @@
 module qhull_kernel_abstraction
 using KernelAbstractions
 using LinearAlgebra
+using oneAPI
 
 include(joinpath(@__DIR__, "..", "src", "ScanPrimitive.jl"))
 include(joinpath(@__DIR__, "..", "src", "MinMaxReduction.jl"))
@@ -9,10 +10,10 @@ using .MinMaxReduction
 
 EPSILON = 1e-9
 
-#TODO: faire un SegmentedMinMaxReduction, waoooow
+# TODO: BIG TRUC: HARMONISER LES WORKGROUP SIZE
 
 ###### Les paramètres ici sont pour tester, ils devront être setup lorsque la librairie.
-backend = CPU()
+backend = oneAPIBackend()
 """
 segment_mask_kernel(b, p, out, identity_val)
 
@@ -75,10 +76,21 @@ Returns a vector p, a permutation of data and a vector sp, a permutation of segm
 ```
 """
 function compact(flags, segments, data, in_length, dim)
-    global_head = KernelAbstractions.zeros(backend, Int, in_length)
-    global_head[1] = 1
-    p = segmented_scan(backend, flags, global_head, (a, b) -> a + b) 
-    n = p[in_length]+flags[in_length] # On ajoute le b[n] car on est en exclusive scan =))
+     #TODO: ça; ça peut être mieux, faut juste voir comment mieux faire pour les donnés GPU
+    global_head_cpu = zeros(Int64, in_length)
+    global_head_cpu[1] = 1
+    
+    global_head = KernelAbstractions.zeros(backend, Int64, in_length)
+    copyto!(global_head, global_head_cpu)
+
+    p = segmented_scan(backend, flags, global_head, ScanPrimitive.AddOp()) 
+
+    p_last    = Vector{eltype(p)}(undef, 1)
+    flag_last = Vector{eltype(flags)}(undef, 1)
+    copyto!(p_last,    1, p,     in_length, 1)
+    copyto!(flag_last, 1, flags, in_length, 1)
+    n = Int(p_last[1]) + Int(flag_last[1]) # On ajoute le b[n] car on est en exclusive scan =))
+
     println("IIIIII : " , p)
     println("Flags : ", flags)
     println("segments: ", segments)
@@ -86,7 +98,7 @@ function compact(flags, segments, data, in_length, dim)
     segment_mask_kernel(backend, 16)(flags, p, head_indices, ndrange=in_length)
     println("Segmented mask kernell output: ", head_indices)
 
-    propagated_heads = segmented_scan(backend, head_indices, segments, min, backward=false, inclusive=true, identity=typemax(Int64))
+    propagated_heads = segmented_scan(backend, head_indices, segments, ScanPrimitive.MinOp(), backward=false, inclusive=true, identity=typemax(Int64))
     
     println("???")
     out_points = KernelAbstractions.allocate(backend, Float64, Int.((dim, n)))    
@@ -109,7 +121,7 @@ end
 
 function compute_hyperplane(simplex_points)
     dim = size(simplex_points, 1)
-    M = hcat(simplex_points', ones(dim))
+    M = hcat(Array(simplex_points)', ones(dim))
 
     U, S, V = svd(M, full=true)
 
@@ -121,14 +133,18 @@ function compute_hyperplane(simplex_points)
 end
 
 @inline function signed_distance(normal::AbstractVector, offset::Real, point::AbstractVector)
-    return dot(normal, point) + offset
+    return dot(normal, Array(point)) + offset
 end
 
 
 function distance_from_hyperplane(points, hyp_points)
-    normal, offset = compute_hyperplane(hyp_points)
-    out_flags = fill(0, size(points)[2])
-    for (index, p) in enumerate(eachcol(points))
+    # Ici on le fait sur CPU, car tous les backend sont pas supportés avec la SVD et le dot(par exemple OneAPI).
+    cpu_hyper_points = Array(hyp_points)
+    cpu_points = Array(points)
+
+    normal, offset = compute_hyperplane(cpu_hyper_points)
+    out_flags = fill(0, size(cpu_points)[2])
+    for (index, p) in enumerate(eachcol(cpu_points))
         dist = signed_distance(normal, offset, p) / norm(normal)
 
         if dist > EPSILON
@@ -141,19 +157,35 @@ function distance_from_hyperplane(points, hyp_points)
         println(index, p, out_flags[index])
     end
     println("outflag: ", out_flags)
-    return out_flags
+
+    #Transfer to GPU
+    out_flags_gpu = KernelAbstractions.allocate(backend, Int64, length(out_flags))
+    copyto!(out_flags_gpu, out_flags)
+    return out_flags_gpu
 end
 
 
 # O(n) :( -> On pourrait le faire en O(log n) sur gpu je pense bien à voir si ça vaut le coups dans le movement des donnés ect...
 # Vu qu'on réduit à chaque fois la taille ça pourrait être inréressant d'avoir un système hybride GPU > threshold au sinon CPU
-function mask(data, pattern) 
-    output = fill(0, length(data))
-    for (index, val) in enumerate(data)
-        if val == pattern output[index] = 1 end
-    end
-    return output
+@kernel function mask_2d_kernel(output, data, n_flags)
+    i, j = @index(Global, NTuple)
+    output[i, j] = data[i] == j ? 1 : 0
 end
+
+#=function mask(data, pattern) 
+    output = fill(0, length(data))
+    
+    for (index, val) in enumerate(data)
+        if val == pattern 
+            output[index] = 1 
+        end
+    end
+
+    # Transfer sur GPU 
+    gpu_output = KernelAbstractions.allocate(backend, Int64, length(data))
+    copyto!(gpu_output, output)
+    return gpu_output
+end=#
 
 @kernel function flag_permute_kernell(forwardScanArray, backwardScanArray, sh, flags, size, outPermutation)
     # TODO
@@ -185,6 +217,13 @@ end
     end
 end
 
+# TODO à voir si c'est vraiment utile ou pas.
+@kernel function mark_segment_id(output, segments)
+    global_id = @index(Global)
+    
+    output[global_id] = (segments[global_id] == 1) ? global_id : 0
+
+end
 
 #TODO je pense vraiment qu'on peut optimiser ça et trouver une autre routine ça pourrait faire gagner
 # pas mal de perf je pense vu que c'est une des composante principale
@@ -200,32 +239,54 @@ julia> flag_permute(.....)
 """
 function flag_permute(flags, segments, data_size, n_flags)
 
-    maskedArray = Matrix{Int64}(undef, data_size, n_flags)
-    scanArray = Matrix{Int64}(undef, data_size, n_flags)
-    backscanArray = Matrix{Int64}(undef, data_size, n_flags)
+    #maskedArray = Matrix{Int64}(undef, data_size, n_flags)
+    #scanArray = Matrix{Int64}(undef, data_size, n_flags)
+    #backscanArray = Matrix{Int64}(undef, data_size, n_flags)
     
+    maskedArray   = KernelAbstractions.zeros(backend, Int64, (length(flags), n_flags))
+    scanArray     = KernelAbstractions.zeros(backend, Int64, (length(flags), n_flags))
+    backscanArray = KernelAbstractions.zeros(backend, Int64, (length(flags), n_flags))
+
+    # OUAAAIIIIS UNE MATRICE DE KERNELLL
+    mask_2d_kernel(backend, (16, 16))(maskedArray, flags, n_flags, ndrange=(length(flags), n_flags))
+    KernelAbstractions.synchronize(backend)
+
     println("-- Flag permute with input --")
     println(flags)
     println(segments)
 
 
     st = similar(segments)
+    mark_segment_id(backend, 16)(st, segments, ndrange=length(segments))
+    
     #TODO en parallèle normalement mais bon vu que je pige RIEN à ce qu'on me veut alors je fais en séquentiel pour l'instant
-    for id=1:length(segments)
+    #= for id=1:length(segments)
         if segments[id] == 1
             st[id] = id
         else
             st[id] = 0
         end 
-    end
+    end=#
 
-    sh = segmented_scan(backend, st, segments,(a, b) -> a+b, backward=false, inclusive=true)
-
-    for i=1:n_flags
+    sh = segmented_scan(backend, st, segments, ScanPrimitive.AddOp(), backward=false, inclusive=true)
+    println("CIIII")
+    
+    #TODO: de la merde ça pour le GPU .....
+    #=for i=1:n_flags
         @views maskedArray[:, i] .= mask(flags, i)
-        @views scanArray[:, i] .=  segmented_scan(backend, maskedArray[:, i], segments, (a, b) -> a+b)
-        @views backscanArray[:, i] .= segmented_scan(backend, scanArray[:, i], segments, max, backward=true, inclusive=true, identity=typemin(Int64)) 
+        @views scanArray[:, i] .=  segmented_scan(backend, maskedArray[:, i], segments, ScanPrimitive.AddOp())
+        @views backscanArray[:, i] .= segmented_scan(backend, scanArray[:, i], segments, ScanPrimitive.MaxOp(), backward=true, inclusive=true, identity=typemin(Int64)) 
+    end=#
+
+    for i = 1:n_flags
+        col_masked   = @view maskedArray[:, i]
+        col_scan     = @view scanArray[:, i]
+        col_backscan = @view backscanArray[:, i]
+        
+        col_scan     .= segmented_scan(backend, col_masked, segments, ScanPrimitive.AddOp())
+        col_backscan .= segmented_scan(backend, col_scan,   segments, ScanPrimitive.MaxOp(), backward=true, inclusive=true, identity=typemin(Int64))
     end
+    println("ON A FINIIII")
 
     # Now the flag permute kernell :)
     outPermutation = similar(flags)
@@ -272,7 +333,7 @@ function compute_simplex(points, dim, backend)
         push!(points_idx, res.imin)
         push!(points_idx, res.imax)
     end
-    synchronize(backend)
+    KernelAbstractions.synchronize(backend)
     return collect(points_idx)
 end
 
@@ -292,11 +353,15 @@ end
 
 function propagate_segment_idx(segments)
     n = length(segments)
-    global_head = KernelAbstractions.zeros(backend, Int, n)
+    global_head = zeros(n)
     global_head[1] = 1
-    seg_id = segmented_scan(backend, segments, global_head, (a, b) -> a + b, backward=false, inclusive=true)
-    synchronize(backend)
-    return seg_id, seg_id[n]
+
+    global_head_gpu = KernelAbstractions.allocate(backend, Int64, n)
+    copyto!(global_head_gpu, global_head)
+
+    seg_id = segmented_scan(backend, segments, global_head_gpu, ScanPrimitive.AddOp(), backward=false, inclusive=true)
+    KernelAbstractions.synchronize(backend)
+    return seg_id, Array(seg_id)[n]
 end
 
 @kernel function distance_to_face_kernel(distances, points, seg_id, normals, offsets, @uniform dim)
@@ -325,13 +390,13 @@ end
 function rebuild_face_hyperplanes_from_heads(face_points, points, segments, dim)
     seg_id, n_segs = propagate_segment_idx(segments)
 
-    normals = KernelAbstractions.allocate(backend, Float64, (dim, n_segs))
-    offsets = KernelAbstractions.allocate(backend, Float64, n_segs)
+    normals = fill(0.0, (dim, n_segs))
+    offsets = fill(0.0, n_segs)
 
     # Pour chaque head, on oriente la face correspondante pour que head soit côté positif
     for i in 1:length(segments)
-        if segments[i] == 1
-            sid = seg_id[i]
+        if Array(segments)[i] == 1 # TODO: MEH ça doit ralentire de bz ça.
+            sid = Array(seg_id)[i]
             face = face_points[sid]
             @views sample = points[:, i]
 
@@ -345,8 +410,12 @@ function rebuild_face_hyperplanes_from_heads(face_points, points, segments, dim)
         end
     end
 
-    synchronize(backend)
-    return normals, offsets
+    normals_gpu = KernelAbstractions.allocate(backend, Float64, (dim, n_segs))
+    offsets_gpu = KernelAbstractions.allocate(backend, Float64, n_segs)
+    
+    copyto!(normals_gpu, normals)
+    copyto!(offsets_gpu, offsets)
+    return normals_gpu, offsets_gpu
 end
 
 @kernel function mark_farthest_candidate_kernel(cand_idx, distances, seg_max, @uniform eps)
@@ -404,8 +473,11 @@ end
 
 function quick_hull(points, n_points, dim)
     convex_hull_bounds = []
-    segments = fill(0, n_points)
-    segments[1] = 1
+    segments_cpu = fill(0, n_points)
+    segments_cpu[1] = 1
+    
+    segments = KernelAbstractions.zeros(backend, Int64, n_points)
+    copyto!(segments, segments_cpu)
 
     # Create a simplex by finding min & max points allong all dimensions
     simplex_idx = compute_simplex(points, dim, backend)
@@ -425,7 +497,10 @@ function quick_hull(points, n_points, dim)
         remove_flags[idx] = 0
     end
     
-    restant, rest_segment = compact(remove_flags, segments, points, n_points, dim)
+    remove_flags_GPU = KernelAbstractions.allocate(backend, eltype(remove_flags), Int(length(remove_flags)))
+    copyto!(remove_flags_GPU, remove_flags)
+
+    restant, rest_segment = compact(remove_flags_GPU, segments, points, n_points, dim)
     println("COMPACT: ", segments)
     println("Segment permutation ? : ", rest_segment)
 
@@ -453,15 +528,15 @@ function quick_hull(points, n_points, dim)
         
         distances = KernelAbstractions.allocate(backend, Float64, n)
         distance_to_face_kernel(backend, 16)(distances, restant, seg_id, face_normals, face_offsets, dim, ndrange=n)
-        synchronize(backend)
+        KernelAbstractions.synchronize(backend)
         
         println(distances)
         println(rest_segment)
         
 
         # On propage le point le plus loins à travers le segement (forward + backward pass)
-        prefix_max = segmented_scan(backend, distances, rest_segment, max,  backward=false, inclusive=true, identity=typemin(Float64))
-        seg_max    = segmented_scan(backend, prefix_max, rest_segment, max, backward=true,  inclusive=true, identity=typemin(Float64))
+        prefix_max = segmented_scan(backend, distances, rest_segment, ScanPrimitive.MaxOp(),  backward=false, inclusive=true, identity=typemin(Float64))
+        seg_max    = segmented_scan(backend, prefix_max, rest_segment, ScanPrimitive.MaxOp(), backward=true,  inclusive=true, identity=typemin(Float64))
         
         println(prefix_max)
         println(seg_max)
@@ -470,15 +545,19 @@ function quick_hull(points, n_points, dim)
 
         cand_idx = KernelAbstractions.allocate(backend, Int64, n)
         mark_farthest_candidate_kernel(backend, 16)(cand_idx, distances, seg_max, 1e-12, ndrange=n)
-        synchronize(backend)
+        KernelAbstractions.synchronize(backend)
 
         println("candIdx: ", cand_idx)
-        prefix_far = segmented_scan(backend, cand_idx, rest_segment, max, backward=false, inclusive=true, identity=typemin(Int64))
-        far_idx_p  = segmented_scan(backend, prefix_far, rest_segment, max, backward=true,  inclusive=true, identity=typemin(Int64))
+        prefix_far = segmented_scan(backend, cand_idx, rest_segment, ScanPrimitive.MaxOp(), backward=false, inclusive=true, identity=typemin(Int64))
+        far_idx_p  = segmented_scan(backend, prefix_far, rest_segment, ScanPrimitive.MaxOp(), backward=true,  inclusive=true, identity=typemin(Int64))
         
         far_idx  = KernelAbstractions.allocate(backend, Int64,  n_segs)
         far_dist = KernelAbstractions.allocate(backend, Float64, n_segs)
         compact_data_to_segment(backend, 16)(far_idx, far_dist, rest_segment, seg_id, far_idx_p, seg_max, ndrange=n)
+        
+        #TODO: ÇA comment a être le bordel.
+        far_idx = Array(far_idx)
+        far_dist = Array(far_dist)
 
         println(far_idx)
         println(far_dist)
@@ -520,7 +599,7 @@ function quick_hull(points, n_points, dim)
         #Test each point for inclusion within the simplex. If it is inside, then it cannot be part of the convex hull. Throw the point out.
         compact_flags = fill(0, n)
         for point_idx in 1:n
-            seg = seg_id[point_idx]
+            seg = Array(seg_id)[point_idx]
             far_id  = far_idx[seg]
 
             if far_id == 0 || far_dist[seg] <= 0 || point_idx == far_id
@@ -540,8 +619,11 @@ function quick_hull(points, n_points, dim)
 
         println("Compact flag to remove inside points: ", compact_flags)
         println("Point restant : ", restant)
+
+        compact_flag_gpu = KernelAbstractions.allocate(backend, eltype(compact_flags), length(compact_flags))
+        copyto!(compact_flag_gpu, compact_flags)
         # Now Remove points inside
-        restant, rest_segment = compact(compact_flags, rest_segment, restant, n, dim)
+        restant, rest_segment = compact(compact_flag_gpu, rest_segment, restant, n, dim)
 
         if length(restant) == 0
             println(convex_hull_bounds)
@@ -618,14 +700,16 @@ function quick_hull(points, n_points, dim)
     return hull_matrix
 end
 
-
 points = [ 0.0 -2.0  0.0  2.0  3.0 -1.0 ;
            2.0  0.0 -2.0  0.0  3.0  1.0 ]
 
 points = [-1.0 0.0 1.0 0.0 ;
            0.0 1.0 0.0 -1.0]
 
-println("size: ", size(points))
-quick_hull(points, size(points)[2], size(points)[1])
+gpu_pts = KernelAbstractions.zeros(backend, Float64, (2,4))
+copyto!(gpu_pts, points)
+
+println("size: ", size(gpu_pts))
+quick_hull(gpu_pts, 4, 2)
 
 end
