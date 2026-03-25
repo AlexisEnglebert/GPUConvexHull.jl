@@ -3,25 +3,37 @@ using KernelAbstractions
 
 export segmented_scan
 
+# On définit ici les différents type d'opération qu'on peut faire avec le segmented-scan.
+# On les définit comme des struct car OneAPI n'aime pas les "types anonyme" et donc ici notre struct a un type bien précis ...
+
+struct MinOp end
+struct MaxOp end
+struct AddOp end
+
+(::MinOp)(a, b) = a < b ? a : b   
+(::MaxOp)(a, b) = a > b ? a : b
+(::AddOp)(a, b) = a + b
+
 # Hmm à voir si on peut pas utiliser des grid en 3 dim pour rendre le calcul plus vite ? 
 # TODO: Regarder la nouvelle méthode "LightScan" qui permetterais de compute les scan primitives plus rappidement.
 # TODO: Voir comment CUB fait car il fait d'une manière différente ...  
 # TODO: être consitant dans le nom des choses !!!
 # TODO: move toutes les primitives de scan dans un autre fichier car là ce n'est plus tenable
 # TODO: Faire en sorte d'utiliser l'opérateur d'identité du oplus à la place de 0 pour l'instant...
-@kernel function segmented_scan_inner_block_downsweep!(out, partial_values, partial_flags, offset_block, in_flags, size::Integer, oplus::Function, identity::Number = 0)
-    global_id = @index(Global)
+@kernel function segmented_scan_inner_block_downsweep!(out, partial_values, partial_flags, offset_block, in_flags, 
+    size::Integer, oplus::Op, ::Val{TREE_SIZE}, identity::T = 0) where {Op, T, TREE_SIZE}
+
+global_id = @index(Global)
     thread_id = @index(Local)
     block_id  = @index(Group)
     
     @uniform group_size = first(@groupsize())
     @uniform tree_power = ceil(Int64, log2(group_size * 2))
-    @uniform tree_size = 1 << tree_power
 
      # Load all partial array in shared memory
-    temp = @localmem(eltype(partial_values), tree_size)
-    input_f = @localmem(eltype(in_flags), tree_size) 
-    f = @localmem(eltype(in_flags), tree_size) 
+    temp = @localmem(eltype(partial_values), TREE_SIZE)
+    input_f = @localmem(eltype(in_flags), TREE_SIZE) 
+    f = @localmem(eltype(in_flags), TREE_SIZE) 
 
     # Init tout à 0 comme ça on évite de faire une branche pour le padding:))
     idx1 = (2*thread_id)-1
@@ -45,12 +57,12 @@ export segmented_scan
 
     @synchronize()
      if thread_id == 1
-         temp[tree_size] = offset_block[block_id]
+         temp[TREE_SIZE] = offset_block[block_id]
      end
     
     for shift in (tree_power-1):-1:0
         offset = 1 << shift
-        if thread_id <= (tree_size >> (shift + 1))
+        if thread_id <= (TREE_SIZE >> (shift + 1))
             t = temp[offset*(thread_id*2)-offset] # Partie de gauche
             temp[offset*(thread_id*2)-offset] = temp[offset*(thread_id*2)]
 
@@ -77,19 +89,20 @@ export segmented_scan
 end
 
 @kernel function segmented_scan_inner_block_upsweep!(partial_values, 
-    partial_flags, block_values, block_tree_flags, block_flags, values, size::Integer, flags, oplus::Function, identity::Number = 0)
+    partial_flags, block_values, block_tree_flags, block_flags, values, size::Integer, flags, 
+    oplus::Op, ::Val{TREE_SIZE}, identity::T = 0) where {Op, T, TREE_SIZE}
+
     global_id = @index(Global)
     thread_id = @index(Local)
     block_id  = @index(Group)
 
     @uniform group_size = first(@groupsize())
     @uniform tree_power = ceil(Int64, log2(group_size * 2))
-    @uniform tree_size = 1 << tree_power
 
     # Each thread treats 2 values so in shared block memory there is 2 * block_size elements
-    temp = @localmem(eltype(values), tree_size)
-    input_f = @localmem(eltype(flags), tree_size) 
-    f = @localmem(eltype(flags), tree_size) 
+    temp = @localmem(eltype(values), TREE_SIZE)
+    input_f = @localmem(eltype(flags), TREE_SIZE) 
+    f = @localmem(eltype(flags), TREE_SIZE) 
 
     # Init tout à 0 comme ça on évite de faire une branche pour le padding:))
     idx1 = (2*thread_id)-1
@@ -112,7 +125,7 @@ end
 
     for shift = 0:(tree_power - 1)
         offset = 1 << shift
-        if thread_id <= tree_size >> (shift+1)
+        if thread_id <= TREE_SIZE >> (shift+1)
             if f[offset*(thread_id*2)] == 0
                 temp[offset*(thread_id*2)] = oplus(temp[offset*(thread_id*2)], temp[offset*(thread_id*2)-offset])
             end
@@ -132,28 +145,34 @@ end
     end
 
     if thread_id == 1
-        block_values[block_id] = temp[tree_size]
-        block_tree_flags[block_id] = f[tree_size]
+        block_values[block_id] = temp[TREE_SIZE]
+        block_tree_flags[block_id] = f[TREE_SIZE]
         block_flags[block_id] = input_f[1]
     end 
    
 end
 
-function segmented_scan_second_level_cpu!(block_values, size::Integer, flags, tree_flags, oplus::Function, identity::Number = 0)
+#TODO: move sur GPU comme le minmaxReduce.
+function segmented_scan_second_level_cpu!(block_values, size::Integer, flags, tree_flags, oplus::Op, identity::T = 0) where {Op, T}
     
+    #TODO: ENLEVER CE TRUC DE CON LÀ ET TOUT GARDER SUR GPU.
+    cpu_block_values = Array(block_values)
+    cpu_flags        = Array(flags)
+    cpu_tree_flags   = Array(tree_flags)
+
     # Values doit être une puissance de 2
     m_pow = ceil(Int, log2(size))
     n = 1 << m_pow
-    
     temp = fill(identity, n)
-    f    = fill(zero(eltype(tree_flags)), n)
-    fi   = fill(one(eltype(flags)), n)
+    f    = fill(zero(eltype(cpu_tree_flags)), n)
+    fi   = fill(one(eltype(cpu_flags)), n)
 
     for i = 1:size
-        temp[i] = block_values[i]
-        f[i]    = tree_flags[i]
-        fi[i]   = flags[i]
+        temp[i] = cpu_block_values[i]
+        f[i]    = cpu_tree_flags[i]
+        fi[i]   = cpu_flags[i]
     end
+
 
     # Upsweep :) 
     for d = 0:(m_pow-1)
@@ -191,7 +210,10 @@ function segmented_scan_second_level_cpu!(block_values, size::Integer, flags, tr
         end
     end
 
-    return temp[1:size]
+    result = temp[1:size]
+    gpu_result = KernelAbstractions.allocate(get_backend(block_values), eltype(block_values), size)
+    copyto!(gpu_result, result)
+    return gpu_result
 end
 
 @kernel function reverse_kernel!(a)
@@ -205,17 +227,17 @@ end
     end
 end
 
-@kernel function shift_right(input, output)
-    global_id = @index(Global)
-    @synchronize()
+@kernel function circshift_kernel(output, input, shift)
+    i = @index(Global)
     n = length(input)
-    if global_id <= n
-        if global_id == 1
-            output[global_id] = 0
-        else
-            output[global_id] = input[global_id-1]
-        end
-    end
+    j = mod1(i - shift, n)  # mod1 pour rester dans [1, n]
+    output[i] = input[j]
+end
+
+function gpu_circshift!(arr, shift, backend)
+    tmp = copy(arr)
+    circshift_kernel(backend, 16)(arr, tmp, shift, ndrange=length(arr))
+    KernelAbstractions.synchronize(backend)
 end
 
 @kernel function inclusive_kernell!(array, inital_value, oplus)
@@ -237,8 +259,28 @@ julia> segmented_scan()
 ```
 """
 
-function segmented_scan(backend, values, flags, oplus::Function; backward=false, inclusive=false, identity::Number=0)
-   n = length(values)
+function segmented_scan(backend, values, flags, oplus::Op; backward=false, inclusive=false, identity::Number=0) where {Op}
+    if eltype(values) != typeof(identity)
+        error("Identity type must be the same as values type. Got ")
+        return -1
+    end
+    
+    values_gpu = values;
+    flags_gpu = flags
+
+    if isa(values, Vector)
+        @warn "Got a non GPU vector as values, converting it to GPU (slower). "
+        values_gpu = KernelAbstractions.allocate(backend, eltype(values), length(values))
+        copyto!(values_gpu, values)
+    end
+
+    if isa(flags, Vector)
+        @warn "Got a non GPU vector in flags, converting it to GPU array (slower)."
+        flags_gpu = KernelAbstractions.allocate(backend, eltype(flags), length(flags))
+        copyto!(flags_gpu, flags)
+    end
+
+    n = length(values_gpu)
     nb_threads_per_block = 8
     nb_blocks = cld(n, 2*nb_threads_per_block)
     reverse_kernell = reverse_kernel!(backend, nb_threads_per_block)
@@ -246,55 +288,63 @@ function segmented_scan(backend, values, flags, oplus::Function; backward=false,
     
     tmp_flags = []
     if backward
-        reverse_kernell(values, ndrange = size(values))
-        synchronize(backend)
-        reverse_kernell(flags, ndrange = size(flags))
-        tmp_flags = copy(flags) # TODO: move sur le gpu
-        synchronize(backend)
+        reverse_kernell(values_gpu, ndrange = size(values_gpu))
+        KernelAbstractions.synchronize(backend)
+        reverse_kernell(flags_gpu, ndrange = size(flags_gpu))
+        tmp_flags = copy(flags_gpu) # TODO: move sur le gpu
+        KernelAbstractions.synchronize(backend)
 
         #shift_kernell(tmp_flags, flags, ndrange = size(flags))
-        circshift!(flags, 1) # TODO GPU
-        synchronize(backend)
+        gpu_circshift!(flags_gpu, 1, backend) # TODO GPU
+        KernelAbstractions.synchronize(backend)
     end
     
     # TODO: Only one GPU memory allocation for this
-    partial_values        = fill(identity, Int(length(values)))
-    partial_flags         = fill(zero(eltype(flags)),  Int(length(values)))
-    blocks_last_value     = fill(identity, Int(nb_blocks))
-    blocks_last_flag      = fill(zero(eltype(flags)),  Int(nb_blocks))
-    blocks_last_tree_flag = fill(zero(eltype(flags)),  Int(nb_blocks))
-    final_array           = fill(identity, Int(length(values)))
-    
+    partial_values        = KernelAbstractions.allocate(backend, eltype(values_gpu), Int(length(values_gpu)))
+    partial_flags         = KernelAbstractions.zeros(backend, eltype(values_gpu),  Int(length(values_gpu)))
+    blocks_last_value     = KernelAbstractions.allocate(backend, eltype(values_gpu), Int(nb_blocks))
+    blocks_last_flag      = KernelAbstractions.zeros(backend, eltype(flags_gpu),  Int(nb_blocks))
+    blocks_last_tree_flag = KernelAbstractions.zeros(backend, eltype(flags_gpu),  Int(nb_blocks))
+    final_array           = KernelAbstractions.allocate(backend, eltype(values_gpu), Int(length(values_gpu)))
+
+    copyto!(partial_values,    fill(identity, Int(length(values_gpu))))
+    copyto!(blocks_last_value, fill(identity, Int(nb_blocks)))
+    copyto!(final_array,       fill(identity, Int(length(values_gpu))))
+
     upsweep_kernell = segmented_scan_inner_block_upsweep!(backend, nb_threads_per_block)    
     downsweep_kernell = segmented_scan_inner_block_downsweep!(backend, nb_threads_per_block)
     inclusive_kernell = inclusive_kernell!(backend, nb_threads_per_block)
 
    
-    upsweep_kernell(partial_values, partial_flags, blocks_last_value, blocks_last_tree_flag, blocks_last_flag, values, length(values), 
-    flags, oplus, identity, ndrange = tuple(nb_blocks * nb_threads_per_block))
+    tree_size = 1 << ceil(Int, log2(nb_threads_per_block * 2))
+
+    upsweep_kernell(partial_values, partial_flags, blocks_last_value, blocks_last_tree_flag, blocks_last_flag, values_gpu, length(values_gpu), 
+    flags_gpu, oplus, Val(tree_size), identity, ndrange = tuple(nb_blocks * nb_threads_per_block))
     
-    synchronize(backend)
+    KernelAbstractions.synchronize(backend)
 
     segmented_blocks = segmented_scan_second_level_cpu!(
     blocks_last_value, length(blocks_last_value), blocks_last_flag, blocks_last_tree_flag, oplus, identity)
 
-    downsweep_kernell(final_array, partial_values, partial_flags, segmented_blocks, flags, length(partial_values), oplus, identity, ndrange = tuple(nb_blocks * nb_threads_per_block))
-    synchronize(backend)
+    downsweep_kernell(final_array, partial_values, partial_flags, segmented_blocks, flags_gpu, length(partial_values), oplus,
+     Val(tree_size), identity, ndrange = tuple(nb_blocks * nb_threads_per_block))
+    KernelAbstractions.synchronize(backend)
 
     if inclusive
-        inclusive_kernell(final_array, values, oplus, ndrange = size(final_array))
-        synchronize(backend)
+        inclusive_kernell(final_array, values_gpu, oplus, ndrange = size(final_array))
+        KernelAbstractions.synchronize(backend)
     end
 
     if backward
-        reverse_kernell(values, ndrange = size(values))
-        synchronize(backend)
+        reverse_kernell(values_gpu, ndrange = size(values_gpu))
+        KernelAbstractions.synchronize(backend)
         reverse_kernell(tmp_flags, ndrange = size(tmp_flags))
-        synchronize(backend)
-        reverse_kernell(final_array, ndrange = size(values))
-        synchronize(backend)
+        KernelAbstractions.synchronize(backend)
+        reverse_kernell(final_array, ndrange = size(values_gpu))
+        KernelAbstractions.synchronize(backend)
 
-        flags .= tmp_flags # TODO le move en GPU coalescence toussa toussa
+        #flags .= tmp_flags # TODO le move en GPU coalescence toussa toussa
+        copyto!(flags_gpu, tmp_flags)
     end
 
     return final_array
