@@ -122,7 +122,7 @@ function min_max_reduce(values, workgroupsSize, backend)
     partial_minmax_block = KernelAbstractions.zeros(backend, MinMax{eltype(values), UInt32}, n_groups)
 
     min_max_reduce_block_kernel(backend, workgroupsSize)(values, partial_minmax_block, length(values), ndrange=n_groups*workgroupsSize)
-    synchronize(backend)
+    KernelAbstractions.synchronize(backend)
     
     while(length(partial_minmax_block) > 1)
         n_remainder_groups = cld(length(partial_minmax_block), workgroupsSize)
@@ -131,9 +131,9 @@ function min_max_reduce(values, workgroupsSize, backend)
         min_max_reduce_block_kernel_minmax(backend, workgroupsSize)(partial_minmax_block, remainder_output, length(partial_minmax_block),
         ndrange=n_remainder_groups*workgroupsSize)
 
-        synchronize(backend)
+        KernelAbstractions.synchronize(backend)
         partial_minmax_block = remainder_output
     end
-    return partial_minmax_block[1]
+    return Array(partial_minmax_block)[1] 
 end
 end
