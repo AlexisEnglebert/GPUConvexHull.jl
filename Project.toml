@@ -1,0 +1,11 @@
+name = "GPUConvexHull"
+uuid = "e9598bf2-4bc8-4445-9a95-66c92232cdab"
+version = "0.1.0"
+authors = ["Alexis Englebert <englebert.alexis@gmail.com>"]
+
+[deps]
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+
+[compat]
+LinearAlgebra = "1.12.0"

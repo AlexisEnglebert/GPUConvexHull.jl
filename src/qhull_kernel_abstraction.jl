@@ -1,10 +1,8 @@
-module qhull_kernel_abstraction
+#module qhull_kernel_abstraction
 using KernelAbstractions
 using LinearAlgebra
-using oneAPI
+#using oneAPI
 
-include(joinpath(@__DIR__, "..", "src", "ScanPrimitive.jl"))
-include(joinpath(@__DIR__, "..", "src", "MinMaxReduction.jl"))
 using .ScanPrimitive
 using .MinMaxReduction
 
@@ -13,7 +11,7 @@ EPSILON = 1e-9
 # TODO: BIG TRUC: HARMONISER LES WORKGROUP SIZE
 
 ###### Les paramètres ici sont pour tester, ils devront être setup lorsque la librairie.
-backend = oneAPIBackend()
+#backend = CPU()
 """
 segment_mask_kernel(b, p, out, identity_val)
 
@@ -196,7 +194,7 @@ end=#
     if global_id ≤ size
         offset = 0
         for idx=1 : flags[global_id]-1
-            offset += backwardScanArray[global_id, idx] + 1
+            offset += backwardScanArray[global_id, idx]
         end
         # TODO: Check la fin car suspect
         @print("Offset : ", offset, "  sh: ", sh[global_id], " ", forwardScanArray[global_id, flags[global_id]], "\n")
@@ -474,7 +472,7 @@ end
     end
 end
 
-function quick_hull(points, n_points, dim)
+function quick_hull(points, n_points = size(points, 2), dim = size(points, 1))
     convex_hull_bounds = []
     segments_cpu = fill(0, n_points)
     segments_cpu[1] = 1
@@ -703,16 +701,4 @@ function quick_hull(points, n_points, dim)
     return hull_matrix
 end
 
-points = [ 0.0 -2.0  0.0  2.0  3.0 -1.0 ;
-           2.0  0.0 -2.0  0.0  3.0  1.0 ]
-
-points = [-1.0 0.0 1.0 0.0 ;
-           0.0 1.0 0.0 -1.0]
-
-gpu_pts = KernelAbstractions.zeros(backend, Float64, (2,4))
-copyto!(gpu_pts, points)
-
-println("size: ", size(gpu_pts))
-quick_hull(gpu_pts, 4, 2)
-
-end
+#end
