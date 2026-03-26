@@ -196,9 +196,12 @@ end=#
     if global_id ≤ size
         offset = 0
         for idx=1 : flags[global_id]-1
-            offset += backwardScanArray[global_id, idx]
+            offset += backwardScanArray[global_id, idx] + 1
         end
         # TODO: Check la fin car suspect
+        @print("Offset : ", offset, "  sh: ", sh[global_id], " ", forwardScanArray[global_id, flags[global_id]], "\n")
+        
+        # Position finale = position du head + position dans le head + le nombre de flag à gauche 
         outPermutation[global_id] = offset + sh[global_id] + forwardScanArray[global_id, flags[global_id]]
     end
 end
