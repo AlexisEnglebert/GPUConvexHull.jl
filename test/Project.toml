@@ -1,0 +1,7 @@
+[deps]
+GPUConvexHull = "e9598bf2-4bc8-4445-9a95-66c92232cdab"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[sources]
+GPUConvexHull = {path = ".."}
