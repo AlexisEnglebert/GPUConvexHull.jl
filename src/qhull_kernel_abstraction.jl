@@ -1,7 +1,7 @@
 module qhull_kernel_abstraction
 using KernelAbstractions
 using LinearAlgebra
-using oneAPI
+using GLMakie, ColorSchemes
 
 include(joinpath(@__DIR__, "..", "src", "ScanPrimitive.jl"))
 include(joinpath(@__DIR__, "..", "src", "MinMaxReduction.jl"))
@@ -145,6 +145,9 @@ function distance_from_hyperplane(points, hyp_points)
     cpu_points = Array(points)
 
     normal, offset = compute_hyperplane(cpu_hyper_points)
+    println("SIMPLEX HYPER PLANE PARAMETERS: ", normal)
+    println("PARAMETERS: ", offset)
+
     out_flags = fill(0, size(cpu_points)[2])
     for (index, p) in enumerate(eachcol(cpu_points))
         dist = signed_distance(normal, offset, p) / norm(normal)
@@ -242,6 +245,7 @@ give a permutation vector to permute flags in given segments in order to sort th
 julia> flag_permute(.....)
 ```
 """
+#TODO : PAS BON ÇA MON COCO
 function flag_permute(flags, segments, data_size, n_flags)
 
     #maskedArray = Matrix{Int64}(undef, data_size, n_flags)
@@ -395,6 +399,8 @@ end
 function rebuild_face_hyperplanes_from_heads(face_points, points, segments, dim)
     seg_id, n_segs = propagate_segment_idx(segments)
 
+    @warn "Cette fonction n'est pas correcte"
+
     println("N segment: ", n_segs)
     normals = fill(0.0, (dim, n_segs))
     offsets = fill(0.0, n_segs)
@@ -487,14 +493,31 @@ function quick_hull(points, n_points, dim)
 
     # Create a simplex by finding min & max points allong all dimensions
     simplex_idx = compute_simplex(points, dim, backend)
+
     println("simplex idx: ", simplex_idx)
     simplex_idx = simplex_idx[1:dim] #TODO pour l'instant c'est la hess mais on prends que les d premiers points pour le simplex
+
+    ##################### MAKIGL ##################### 
+    all_points  = [Point3f(points[:, i]) for i in 1:size(points, 2)]
+    #hull_pts_matrix = Array(convex_hull)
+    simplex_nodes = [Point3f(points[:, i]) for i in simplex_idx]
+
+    println("simplex nodes ", simplex_nodes)
+
+    fig = Figure(resolution = (1200, 800))
+    ax  = Axis3(fig[1, 1], title = "Résultat QuickHull GPU", aspect = :data)
+    mesh!(ax, simplex_nodes, [1, 2, 3])
+    scatter!(ax, points, color = :grey, markersize = 12,   label = "Tous les points")
+    scatter!(ax, simplex_nodes, color = :red, markersize = 20,   label = "Simplex")
+
+   
+
+    
     simplex_matrix = points[:, simplex_idx]
 
     for i in 1:size(simplex_matrix, 2)
         push!(convex_hull_bounds, copy(simplex_matrix[:, i]))
     end
-
 
     println("Simplex index : ", simplex_idx)
     println("Simplex_matrix: ", simplex_matrix)
@@ -530,18 +553,48 @@ function quick_hull(points, n_points, dim)
     end=#
 
     println("face_points : ", face_points)
-    #normal, offset = compute_hyperplane(face_points[1])
+    normal, offset = compute_hyperplane(face_points[1])
 
-    #face_normals = fill(0.0, (dim, 1))
-    #face_offsets = fill(0.0, 1)
+    face_normals = fill(0.0, (dim, 2))
+    face_offsets = fill(0.0, 2)
 
-    #face_normals[:,1], normal
-    #face_offsets[1] = offset
+    face_normals[:,1] = normal
+    face_offsets[1] = offset
+    
+    face_normals[:, 2] = -normal
+    face_offsets[2] = -offset
+    
+    #face_normals, face_offsets = rebuild_face_hyperplanes_from_heads(face_points, restant, rest_segment, dim)
 
-    face_normals, face_offsets = rebuild_face_hyperplanes_from_heads(face_points, restant, rest_segment, dim)
+    println("normals: ", face_normals)
+    println("offset:", face_offsets)
+    n_faces = size(face_normals, 2)
+    arrow_directions = [Vec3f(face_normals[:, i]) for i in 1:n_faces]
+    arrow_points = [Point3f(face_offsets[i] .* face_normals[:, i]) for i in 1:n_faces]
+    colors = [ColorSchemes.tab10[i] for i in 1:n_faces]
 
+    println("Arrow points :", arrow_points)
+    println("Arrow directions :", arrow_directions)
+    
+    arrows!(ax, arrow_points, arrow_directions;
+        arrowsize = 0.1,
+        linewidth  = 0.05,
+        color      = colors
+    )
     println(face_normals, face_offsets)
     
+
+    # On affiche les 2 normals des plans 
+
+    axislegend(ax)
+    DataInspector(fig)
+    display(fig)
+
+    if !isinteractive()
+        println("Fenêtre ouverte. Appuyez sur Entrée pour terminer.")
+        readline()
+    end
+
     while size(restant, 2) > 0
         println("######### NEW ITTERATION ############")
         # For each segments we compute the hyperplane corresponding to them.
@@ -587,6 +640,7 @@ function quick_hull(points, n_points, dim)
         far_dist = Array(far_dist)
 
         println("far_idx:", far_idx)
+        return;
         #println(far_dist)
         # Maintenant on forme les différents simplexes et on fait le test de pts comme avant la boucle while
         
