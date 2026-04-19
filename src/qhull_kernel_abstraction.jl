@@ -73,7 +73,7 @@ Returns a vector p, a permutation of data and a vector sp, a permutation of segm
 
 ```
 """
-function compact(flags, segments, data, in_length, dim)
+function compact(backend, flags, segments, data, in_length, dim)
      #TODO: ça; ça peut être mieux, faut juste voir comment mieux faire pour les donnés GPU
     global_head_cpu = zeros(Int64, in_length)
     global_head_cpu[1] = 1
@@ -136,7 +136,7 @@ end
 end
 
 
-function distance_from_hyperplane(points, hyp_points)
+function distance_from_hyperplane(backend, points, hyp_points)
     # Ici on le fait sur CPU, car tous les backend sont pas supportés avec la SVD et le dot(par exemple OneAPI).
     cpu_hyper_points = Array(hyp_points)
     cpu_points = Array(points)
@@ -243,7 +243,7 @@ julia> flag_permute(.....)
 ```
 """
 #TODO : PAS BON ÇA MON COCO
-function flag_permute(flags, segments, data_size, n_flags)
+function flag_permute(backend, flags, segments, data_size, n_flags)
 
     #maskedArray = Matrix{Int64}(undef, data_size, n_flags)
     #scanArray = Matrix{Int64}(undef, data_size, n_flags)
@@ -356,7 +356,7 @@ function permute_points(backend, points, perm, dim)
 end
 
 
-function propagate_segment_idx(segments)
+function propagate_segment_idx(backend, segments)
     println("propagate_segment_idx: ", segments)
     n = length(segments)
     global_head = zeros(n)
@@ -393,8 +393,8 @@ end
     return n, b
 end
 
-function rebuild_face_hyperplanes_from_heads(face_points, points, segments, dim)
-    seg_id, n_segs = propagate_segment_idx(segments)
+function rebuild_face_hyperplanes_from_heads(backend, face_points, points, segments, dim)
+    seg_id, n_segs = propagate_segment_idx(backend, segments)
 
     @warn "Cette fonction n'est pas correcte"
 
@@ -480,7 +480,7 @@ end
     end
 end
 
-function quick_hull(points, n_points = size(points, 2), dim = size(points, 1))
+function quick_hull(backend, points, n_points = size(points, 2), dim = size(points, 1))
     convex_hull_bounds = []
     segments_cpu = fill(0, n_points)
     segments_cpu[1] = 1
@@ -527,15 +527,15 @@ function quick_hull(points, n_points = size(points, 2), dim = size(points, 1))
     remove_flags_GPU = KernelAbstractions.allocate(backend, eltype(remove_flags), Int(length(remove_flags)))
     copyto!(remove_flags_GPU, remove_flags)
 
-    restant, rest_segment = compact(remove_flags_GPU, segments, points, n_points, dim)
+    restant, rest_segment = compact(backend, remove_flags_GPU, segments, points, n_points, dim)
     println("SEGMENT APRÈS LE COMPACT: ", rest_segment)
 
-    dist_flags = distance_from_hyperplane(restant, simplex_matrix)
+    dist_flags = distance_from_hyperplane(backend, restant, simplex_matrix)
     # Now that we have our simplex perfom the algorithm
     println("Restant après le compact de la face: ", restant)
     #TODO : compact avec les segments
 
-    outPermutation = flag_permute(dist_flags, rest_segment, length(rest_segment), 2)    
+    outPermutation = flag_permute(backend, dist_flags, rest_segment, length(rest_segment), 2)    
     println("Outpermutation: ", outPermutation)
 
     restant = permute_points(backend, restant, outPermutation, dim)
@@ -598,7 +598,7 @@ function quick_hull(points, n_points = size(points, 2), dim = size(points, 1))
     while size(restant, 2) > 0
         println("######### NEW ITTERATION ############")
         # For each segments we compute the hyperplane corresponding to them.
-        seg_id, n_segs = propagate_segment_idx(rest_segment)
+        seg_id, n_segs = propagate_segment_idx(backend, rest_segment)
         n = size(restant, 2)
         println("RESTANT: ", n)
         if n_segs == 0
@@ -705,7 +705,7 @@ function quick_hull(points, n_points = size(points, 2), dim = size(points, 1))
         compact_flag_gpu = KernelAbstractions.allocate(backend, eltype(compact_flags), length(compact_flags))
         copyto!(compact_flag_gpu, compact_flags)
         # Now Remove points inside
-        restant, rest_segment = compact(compact_flag_gpu, rest_segment, restant, n, dim)
+        restant, rest_segment = compact(backend, compact_flag_gpu, rest_segment, restant, n, dim)
 
         if length(restant) == 0
             println(convex_hull_bounds)
@@ -755,7 +755,7 @@ function quick_hull(points, n_points = size(points, 2), dim = size(points, 1))
         #println("face flags: ", face_flag)
         #println("rest_segment: ", rest_segment)
         
-        out_perm = flag_permute(face_flag, rest_segment, length(face_flag), n_total_flag)
+        out_perm = flag_permute(backend, face_flag, rest_segment, length(face_flag), n_total_flag)
         restant = permute_points(backend, restant, out_perm, dim)
         
         #println("Out permutation pour la prochaine ittération : ", out_perm)
@@ -772,8 +772,7 @@ function quick_hull(points, n_points = size(points, 2), dim = size(points, 1))
             end
         end
         face_points = new_face_list
-
-        face_normals, face_offsets = rebuild_face_hyperplanes_from_heads(face_points, restant, rest_segment, dim)
+        face_normals, face_offsets = rebuild_face_hyperplanes_from_heads(backend, face_points, restant, rest_segment, dim)
 
     end
 
