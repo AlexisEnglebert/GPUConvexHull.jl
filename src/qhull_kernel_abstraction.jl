@@ -1,7 +1,7 @@
 #module qhull_kernel_abstraction
 using KernelAbstractions
 using LinearAlgebra
-using GLMakie, ColorSchemes
+#using GLMakie, ColorSchemes
 
 include(joinpath(@__DIR__, "..", "src", "ScanPrimitive.jl"))
 include(joinpath(@__DIR__, "..", "src", "MinMaxReduction.jl"))

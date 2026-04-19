@@ -1,4 +1,4 @@
-using GLMakie
+#using GLMakie
 using KernelAbstractions
 import GeometryBasics: Mesh, Point3f, TriangleFace
 
