@@ -3,9 +3,6 @@ using KernelAbstractions
 using LinearAlgebra
 #using GLMakie, ColorSchemes
 
-include(joinpath(@__DIR__, "..", "src", "ScanPrimitive.jl"))
-include(joinpath(@__DIR__, "..", "src", "MinMaxReduction.jl"))
-
 using .ScanPrimitive
 using .MinMaxReduction
 
