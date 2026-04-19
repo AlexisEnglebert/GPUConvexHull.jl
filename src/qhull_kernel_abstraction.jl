@@ -206,8 +206,8 @@ end=#
         # TODO: Check la fin car suspect
         @print("Offset : ", offset, "  sh: ", sh[global_id], " ", forwardScanArray[global_id, flags[global_id]], "\n")
         
-        # Position finale = position du head + position dans le head + le nombre de flag à gauche 
-        outPermutation[global_id] = offset + sh[global_id] + forwardScanArray[global_id, flags[global_id]]
+        # Position finale = Le début du sous segment dans le segment  + position du head + le nombre de flag à gauche (la position du flag dans le sous segment). 
+        outPermutation[global_id] = offset + sh[global_id] + (forwardScanArray[global_id, flags[global_id]] - 1) 
     end
 end
 
@@ -292,7 +292,7 @@ function flag_permute(flags, segments, data_size, n_flags)
         col_scan     = @view scanArray[:, i]
         col_backscan = @view backscanArray[:, i]
         
-        col_scan     .= segmented_scan(backend, col_masked, segments, ScanPrimitive.AddOp())
+        col_scan     .= segmented_scan(backend, col_masked, segments, ScanPrimitive.AddOp(), inclusive=true)
         col_backscan .= segmented_scan(backend, col_scan,   segments, ScanPrimitive.MaxOp(), backward=true, inclusive=true, identity=typemin(Int64))
     end
     
@@ -498,7 +498,7 @@ function quick_hull(points, n_points, dim)
     simplex_idx = simplex_idx[1:dim] #TODO pour l'instant c'est la hess mais on prends que les d premiers points pour le simplex
 
     ##################### MAKIGL ##################### 
-    all_points  = [Point3f(points[:, i]) for i in 1:size(points, 2)]
+    #= all_points  = [Point3f(points[:, i]) for i in 1:size(points, 2)]
     #hull_pts_matrix = Array(convex_hull)
     simplex_nodes = [Point3f(points[:, i]) for i in simplex_idx]
 
@@ -509,7 +509,7 @@ function quick_hull(points, n_points, dim)
     mesh!(ax, simplex_nodes, [1, 2, 3])
     scatter!(ax, points, color = :grey, markersize = 12,   label = "Tous les points")
     scatter!(ax, simplex_nodes, color = :red, markersize = 20,   label = "Simplex")
-
+    =#
    
 
     
@@ -569,7 +569,7 @@ function quick_hull(points, n_points, dim)
     println("normals: ", face_normals)
     println("offset:", face_offsets)
     n_faces = size(face_normals, 2)
-    arrow_directions = [Vec3f(face_normals[:, i]) for i in 1:n_faces]
+    #=arrow_directions = [Vec3f(face_normals[:, i]) for i in 1:n_faces]
     arrow_points = [Point3f(face_offsets[i] .* face_normals[:, i]) for i in 1:n_faces]
     colors = [ColorSchemes.tab10[i] for i in 1:n_faces]
 
@@ -580,20 +580,23 @@ function quick_hull(points, n_points, dim)
         arrowsize = 0.1,
         linewidth  = 0.05,
         color      = colors
-    )
+    ) =#
     println(face_normals, face_offsets)
     
 
     # On affiche les 2 normals des plans 
 
-    axislegend(ax)
+    #=axislegend(ax)
     DataInspector(fig)
-    display(fig)
-
-    if !isinteractive()
+    display(fig) 
+    
+     if !isinteractive()
         println("Fenêtre ouverte. Appuyez sur Entrée pour terminer.")
         readline()
     end
+
+    =#
+
 
     while size(restant, 2) > 0
         println("######### NEW ITTERATION ############")
@@ -640,7 +643,7 @@ function quick_hull(points, n_points, dim)
         far_dist = Array(far_dist)
 
         println("far_idx:", far_idx)
-        return;
+        #return;
         #println(far_dist)
         # Maintenant on forme les différents simplexes et on fait le test de pts comme avant la boucle while
         
