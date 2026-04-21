@@ -8,6 +8,15 @@ using .MinMaxReduction
 
 EPSILON = 1e-9
 
+
+mutable struct QhullData
+    vertices::Vector{Vector{Int}}   
+    neighbors::Vector{Vector{Int}}
+    normals::Vector{Vector{Float64}}
+    offsets::Vector{Float64}
+    active::Vector{Bool}
+end
+
 # TODO: BIG TRUC: HARMONISER LES WORKGROUP SIZE
 
 ###### Les paramètres ici sont pour tester, ils devront être setup lorsque la librairie.
@@ -480,11 +489,22 @@ end
     end
 end
 
+
 function quick_hull(backend, points, n_points = size(points, 2), dim = size(points, 1))
     convex_hull_bounds = []
     segments_cpu = fill(0, n_points)
     segments_cpu[1] = 1
     
+    # On init tout à 2 car on a 2 facettes au début.
+    mesh = QhullData(
+        Vector{Vector{Int}}(undef, 2),
+        Vector{Vector{Int}}(undef, 2),
+        Vector{Vector{Float64}}(undef, 2),
+        zeros(Float64, 2),
+        fill(true, 2)
+    )
+
+
     segments = KernelAbstractions.zeros(backend, Int64, n_points)
     copyto!(segments, segments_cpu)
 
@@ -507,8 +527,6 @@ function quick_hull(backend, points, n_points = size(points, 2), dim = size(poin
     scatter!(ax, points, color = :grey, markersize = 12,   label = "Tous les points")
     scatter!(ax, simplex_nodes, color = :red, markersize = 20,   label = "Simplex")
     =#
-   
-
     
     simplex_matrix = points[:, simplex_idx]
 
@@ -560,7 +578,21 @@ function quick_hull(backend, points, n_points = size(points, 2), dim = size(poin
     
     face_normals[:, 2] = -normal
     face_offsets[2] = -offset
-    
+
+    mesh.vertices[1] = copy(simplex_idx)
+    mesh.neighbors[1] = fill(2, dim)
+
+    mesh.normals[1] = normal
+    mesh.offsets[1] = offset
+
+    mesh.normals[2] = -normal
+    mesh.offsets[2] = -offset
+
+    # TODO: Changer le compact pour qu'il gère les ids des pts (pour stocker l'id des vertex).
+    original_ids_cpu = collect(1:n_points)
+    original_ids = KernelAbstractions.allocate(backend, Int64, n_points)
+    copyto!(original_ids, original_ids_cpu)
+
     #face_normals, face_offsets = rebuild_face_hyperplanes_from_heads(face_points, restant, rest_segment, dim)
 
     println("normals: ", face_normals)
@@ -743,6 +775,7 @@ function quick_hull(backend, points, n_points = size(points, 2), dim = size(poin
                 end
             end
 
+            face_flag[point_idx] = best_face_idx
            
         end
         
