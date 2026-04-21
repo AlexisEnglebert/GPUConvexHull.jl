@@ -9,7 +9,7 @@ function test_qhull(points, backend, expected)
     println("size: ", size(gpu_pts))
     @show KernelAbstractions.get_backend(gpu_pts)
     @show sol = GPUConvexHull.quick_hull(backend, gpu_pts)
-    @test sol == expected
+    @test sol.hull_points == expected
 end
 
 @testset "2D square" begin

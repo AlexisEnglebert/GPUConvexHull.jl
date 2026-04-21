@@ -17,6 +17,12 @@ mutable struct QhullData
     active::Vector{Bool}
 end
 
+mutable struct QhullResult
+    hull_points::Matrix{Float64}
+    hull_indices::Vector{Int}
+    #hull_faces::Vector{Vector{Int}}
+end
+
 # TODO: BIG TRUC: HARMONISER LES WORKGROUP SIZE
 
 ###### Les paramètres ici sont pour tester, ils devront être setup lorsque la librairie.
@@ -114,23 +120,29 @@ function compact(backend, flags, segments, data, original_ids, in_length, dim)
     #println("segments: ", segments)
     head_indices = KernelAbstractions.allocate(backend, Int64, in_length)
     segment_mask_kernel(backend, 16)(flags, p, head_indices, ndrange=in_length)
+    KernelAbstractions.synchronize(backend)
+
     #println("Segmented mask kernell output: ", head_indices)
 
     propagated_heads = segmented_scan(backend, head_indices, segments, ScanPrimitive.MinOp(), backward=false, inclusive=true, identity=typemax(Int64))
     
-    println("???")
+    #println("???")
     out_points = KernelAbstractions.allocate(backend, Float64, Int.((dim, n)))    
     permute_data_kernel(backend, 16)(out_points, data, flags, p, dim, ndrange = in_length)
-    
+    KernelAbstractions.synchronize(backend)
+
     sp_out = KernelAbstractions.zeros(backend, Int64, n)
     permute_sp_kernel(backend, 16)(sp_out, propagated_heads, flags, p, ndrange=in_length)
+    KernelAbstractions.synchronize(backend)
 
     new_segments = KernelAbstractions.zeros(backend, Int, n)
     detect_heads_kernel(backend, 16)(new_segments, sp_out, n, ndrange=n)
+    KernelAbstractions.synchronize(backend)
 
-    println("Ici le prob à mon avis : ", sp_out)
+    #println("Ici le prob à mon avis : ", sp_out)
     out_ids = KernelAbstractions.allocate(backend, Int64, n)
     permute_indices_kernel(backend, 16)(out_ids, original_ids, flags, p, ndrange=in_length)
+    KernelAbstractions.synchronize(backend)
 
     println("Propagated heads : ", propagated_heads)
     println("Out segments is : ", new_segments)
@@ -544,7 +556,6 @@ end
 
 # TODO: J'ai vu qu'il y avais moyens de faire un BFS sur GPU en utilisant une représentation RCS du graphe. À voir si j'ai le temps. 
 function insert_point_and_update_mesh(mesh, point_idx, face_id, points, dim)
-
     # Maintenant qu'on a nos faces visible on trouve l'horizon entre les faces visibles et les faces non visibles.
     #TODO: paralléliser sur GPU ?
     visible_faces = get_visible_faces(mesh, point_idx, face_id, points)
@@ -643,6 +654,7 @@ end
 
 function quick_hull(backend, points, n_points = size(points, 2), dim = size(points, 1))
     convex_hull_bounds = []
+    result = QhullResult(zeros(dim, 0), Int[])
     n_iter = 0
     # On init tout à 2 car on a 2 facettes au début.
     mesh = QhullData([], [], [], [], [])
@@ -684,6 +696,7 @@ function quick_hull(backend, points, n_points = size(points, 2), dim = size(poin
 
      for i in 1:size(simplex_matrix, 2)
         push!(convex_hull_bounds, copy(simplex_matrix[:, i]))
+        push!(result.hull_indices, simplex_idx[i])
     end
 
     segments_cpu = fill(0, n_points)
@@ -740,12 +753,18 @@ function quick_hull(backend, points, n_points = size(points, 2), dim = size(poin
     ids_new = KernelAbstractions.zeros(backend, Int64, size(restant, 2))
     
     permute_points_kernel(backend, 16)(restant_new, restant, out_perm, dim, ndrange=size(restant, 2))
+    KernelAbstractions.synchronize(backend)
+
     permute_kernel(backend, 16)(ids_new, original_ids, out_perm, ndrange=size(restant, 2))
+    KernelAbstractions.synchronize(backend)    
 
-
-    compacted_flags_gpu = KernelAbstractions.allocate(backend, Int64, size(restant, 2))
-    permute_indices_kernel(backend, 16)(compacted_flags_gpu, face_flags_gpu, cflags, cp, ndrange=size(restant, 2))
-    
+    println("Compacted flags gpu: ", compacted_flags_gpu)
+    println("face_flags_gpu: ", face_flags_gpu)
+    println("compact_flags_gpu: ", compact_flags_gpu)
+    println("cflags: ", cflags, " cp: ", cp)
+    println("n : ", n)
+    println("restant: ", restant)
+    # ---- BUG ENTRE ICI ET ICI
 
     cf_cpu = Array(compacted_flags_gpu)
     current_unique_flags = sort(unique(cf_cpu))
@@ -859,6 +878,7 @@ function quick_hull(backend, points, n_points = size(points, 2), dim = size(poin
         for (point_idx, face_id) in points_to_insert
             println("Adding to the convexhull : ", points[:, point_idx], " with face id ", face_id)
             push!(convex_hull_bounds, points[:, point_idx])
+            push!(result.hull_indices, point_idx)
             insert_point_and_update_mesh(mesh, point_idx, face_id, points, dim)
         end
 
@@ -939,9 +959,11 @@ function quick_hull(backend, points, n_points = size(points, 2), dim = size(poin
         n_iter += 1
     end
 
-    sorted_hull = sort_points_counter_clockwise(hcat(convex_hull_bounds...))
+    result.hull_points = sort_points_counter_clockwise(hcat(convex_hull_bounds...))
+    println("Convex hull computed in $n_iter iterations with ", length(result.hull_indices), " points in the hull.")
+    println("Convex hull indices: ", result.hull_indices) # TODO: les indices ne sont pas triés dans l'ordre du hull, à voir si c'est un problème ou pas.
 
-    return sorted_hull
+    return result
 end
 
 # ---- Truc pour lire les fichiers
