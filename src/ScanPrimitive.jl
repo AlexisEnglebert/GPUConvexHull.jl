@@ -269,13 +269,13 @@ function segmented_scan(backend, values, flags, oplus::Op; backward=false, inclu
     flags_gpu = flags
 
     if isa(values, Vector)
-        @warn "Got a non GPU vector as values, converting it to GPU (slower). "
+        #@warn "Got a non GPU vector as values, converting it to GPU (slower). "
         values_gpu = KernelAbstractions.allocate(backend, eltype(values), length(values))
         copyto!(values_gpu, values)
     end
 
     if isa(flags, Vector)
-        @warn "Got a non GPU vector in flags, converting it to GPU array (slower)."
+        #@warn "Got a non GPU vector in flags, converting it to GPU array (slower)."
         flags_gpu = KernelAbstractions.allocate(backend, eltype(flags), length(flags))
         copyto!(flags_gpu, flags)
     end
@@ -302,15 +302,20 @@ function segmented_scan(backend, values, flags, oplus::Op; backward=false, inclu
     # TODO: Only one GPU memory allocation for this
     partial_values        = KernelAbstractions.allocate(backend, eltype(values_gpu), Int(length(values_gpu)))
     partial_flags         = KernelAbstractions.zeros(backend, eltype(values_gpu),  Int(length(values_gpu)))
+    final_array           = KernelAbstractions.allocate(backend, eltype(values_gpu), Int(length(values_gpu)))
+
     blocks_last_value     = KernelAbstractions.allocate(backend, eltype(values_gpu), Int(nb_blocks))
     blocks_last_flag      = KernelAbstractions.zeros(backend, eltype(flags_gpu),  Int(nb_blocks))
     blocks_last_tree_flag = KernelAbstractions.zeros(backend, eltype(flags_gpu),  Int(nb_blocks))
-    final_array           = KernelAbstractions.allocate(backend, eltype(values_gpu), Int(length(values_gpu)))
 
-    copyto!(partial_values,    fill(identity, Int(length(values_gpu))))
-    copyto!(blocks_last_value, fill(identity, Int(nb_blocks)))
-    copyto!(final_array,       fill(identity, Int(length(values_gpu))))
+    #copyto!(partial_values,    fill(identity, Int(length(values_gpu))))
+    #copyto!(blocks_last_value, fill(identity, Int(nb_blocks)))
+    #copyto!(final_array,       fill(identity, Int(length(values_gpu))))
 
+    fill!(partial_values, identity)
+    fill!(blocks_last_value, identity)
+    fill!(final_array, identity)
+    
     upsweep_kernell = segmented_scan_inner_block_upsweep!(backend, nb_threads_per_block)    
     downsweep_kernell = segmented_scan_inner_block_downsweep!(backend, nb_threads_per_block)
     inclusive_kernell = inclusive_kernell!(backend, nb_threads_per_block)
