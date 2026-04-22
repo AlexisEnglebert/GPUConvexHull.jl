@@ -23,6 +23,7 @@ struct ScanMemoryArrays{T, F, B}
     blocks_last_tree_flag::F
     tmp_flags::F
     backend::B
+    workgroup_size::Int
     nb_block::Int
 end
 
@@ -47,7 +48,7 @@ function allocate_scan_memory_arrays(backend, val_type, flag_type, workgroup_siz
     tmp_flags             = KernelAbstractions.zeros(backend, flag_type,  Int(n))
 
     return ScanMemoryArrays(partial_values, partial_flags, blocks_last_value,
-     blocks_last_flag, blocks_last_tree_flag, tmp_flags, backend, nb_block)
+     blocks_last_flag, blocks_last_tree_flag, tmp_flags, backend, workgroup_size, nb_block)
 end
 
 # Hmm à voir si on peut pas utiliser des grid en 3 dim pour rendre le calcul plus vite ?
@@ -316,9 +317,8 @@ function segmented_scan(backend, mem_arrays::ScanMemoryArrays, values, flags, op
     end
 
     n = length(values_gpu)
-    nb_threads_per_block = 8
-    nb_blocks = cld(n, 2*nb_threads_per_block)
-    reverse_kernell = reverse_kernel!(backend, nb_threads_per_block)
+
+    reverse_kernell = reverse_kernel!(backend, mem_arrays.workgroup_size)
     #shift_kernell   = shift_right(backend, nb_threads_per_block) TODO: Pas bon ça !!!!!
 
     tmp_flags = []
@@ -356,21 +356,21 @@ function segmented_scan(backend, mem_arrays::ScanMemoryArrays, values, flags, op
     fill!(mem_arrays.blocks_last_value, identity)
     fill!(final_array, identity)
 
-    upsweep_kernell = segmented_scan_inner_block_upsweep!(backend, nb_threads_per_block)
-    downsweep_kernell = segmented_scan_inner_block_downsweep!(backend, nb_threads_per_block)
-    inclusive_kernell = inclusive_kernell!(backend, nb_threads_per_block)
+    upsweep_kernell = segmented_scan_inner_block_upsweep!(backend, mem_arrays.workgroup_size)
+    downsweep_kernell = segmented_scan_inner_block_downsweep!(backend, mem_arrays.workgroup_size)
+    inclusive_kernell = inclusive_kernell!(backend, mem_arrays.workgroup_size)
 
-    tree_size = 1 << ceil(Int, log2(nb_threads_per_block * 2))
+    tree_size = 1 << ceil(Int, log2(mem_arrays.workgroup_size * 2))
 
     upsweep_kernell(mem_arrays.partial_values, mem_arrays.partial_flags, mem_arrays.blocks_last_value, mem_arrays.blocks_last_tree_flag, mem_arrays.blocks_last_flag, values_gpu, length(values_gpu),
-    flags_gpu, oplus, Val(tree_size), identity, ndrange = tuple(nb_blocks * nb_threads_per_block))
+    flags_gpu, oplus, Val(tree_size), identity, ndrange = tuple(mem_arrays.nb_block * mem_arrays.workgroup_size))
     KernelAbstractions.synchronize(backend)
 
     segmented_blocks = segmented_scan_second_level_cpu!(
-    mem_arrays.blocks_last_value, nb_blocks, mem_arrays.blocks_last_flag, mem_arrays.blocks_last_tree_flag, oplus, identity)
+    mem_arrays.blocks_last_value, mem_arrays.nb_block, mem_arrays.blocks_last_flag, mem_arrays.blocks_last_tree_flag, oplus, identity)
 
     downsweep_kernell(final_array, mem_arrays.partial_values, mem_arrays.partial_flags, segmented_blocks, flags_gpu,
-    n, oplus, Val(tree_size), identity, ndrange = tuple(nb_blocks * nb_threads_per_block))
+    n, oplus, Val(tree_size), identity, ndrange = tuple(mem_arrays.nb_block * mem_arrays.workgroup_size))
     KernelAbstractions.synchronize(backend)
 
     if inclusive
