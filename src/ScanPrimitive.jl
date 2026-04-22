@@ -295,7 +295,8 @@ julia> segmented_scan()
 ```
 """
 
-function segmented_scan(backend, mem_arrays::ScanMemoryArrays, values, flags, oplus::Op; backward=false, inclusive=false, identity::Number=0) where {Op}
+function segmented_scan(backend, mem_arrays::ScanMemoryArrays{T, F, B}, values, flags, oplus::Op; backward=false, inclusive=false, identity::T = zero(T) ) where{Op, T, F, B}
+
     if eltype(values) != typeof(identity)
         error("Identity type must be the same as values type. Got ")
         return -1
@@ -348,7 +349,7 @@ function segmented_scan(backend, mem_arrays::ScanMemoryArrays, values, flags, op
     copyto!(blocks_last_value, fill(identity, Int(nb_blocks)))
     copyto!(final_array,       fill(identity, Int(length(values_gpu)))) =#
 
-    fill!(mem_arrays.partial_flags, 0.0)
+    fill!(mem_arrays.partial_flags, 0)
     fill!(mem_arrays.blocks_last_flag, 0)
     fill!(mem_arrays.blocks_last_tree_flag, 0)
 

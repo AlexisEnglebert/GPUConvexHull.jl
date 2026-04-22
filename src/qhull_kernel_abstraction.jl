@@ -731,6 +731,7 @@ function read_input_file(path)
 end
 
 function sort_points_counter_clockwise(points)
+    points = Array(points)
     barycenter = sum(points, dims=2)[:] ./ size(points, 2)
     angles = atan.(points[2, :] .- barycenter[2], points[1, :] .- barycenter[1])
     sorted_indices = sortperm(angles)
