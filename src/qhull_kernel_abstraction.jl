@@ -458,8 +458,8 @@ function quick_hull(backend, points, n_points = size(points, 2), dim = size(poin
     convex_hull_bounds = []
     result = QhullResult(zeros(dim, 0), Int[])
 
-    segment_mem_data_float = allocate_scan_memory_arrays(backend, Float64, Int64, workgroup_size, n_points)
-    segment_mem_data_int = allocate_scan_memory_arrays(backend, Int64, Int64, workgroup_size, n_points)
+    segment_mem_data_float = create_scan_primitive_context(backend, Float64, Int64, workgroup_size, n_points)
+    segment_mem_data_int = create_scan_primitive_context(backend, Int64, Int64, workgroup_size, n_points)
 
     n_iter = 0
     # On init tout à 2 car on a 2 facettes au début.
