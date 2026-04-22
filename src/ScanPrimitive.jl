@@ -1,7 +1,7 @@
 module ScanPrimitive
 using KernelAbstractions
 
-export segmented_scan
+export segmented_scan, allocate_scan_memory_arrays
 
 # On définit ici les différents type d'opération qu'on peut faire avec le segmented-scan.
 # On les définit comme des struct car OneAPI n'aime pas les "types anonyme" et donc ici notre struct a un type bien précis ...
