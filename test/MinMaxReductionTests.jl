@@ -70,14 +70,14 @@ using .ScanPrimitive
         @test out.imax == 5
     end
 
-    @testset "multuple max" begin
+    @testset "multiple max" begin
         data = [1, 2, 3 ,4, 5, 5]
         out = min_max_reduce(data, 4, backend)
 
         @test out.min == 1
         @test out.imin == 1
         @test out.max == 5
-        @test out.imax == 5
+        @test out.imax == 6
     end
 
 @testset "Compact" begin

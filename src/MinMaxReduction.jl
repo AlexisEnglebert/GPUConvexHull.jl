@@ -46,7 +46,7 @@ Base.zero(::Type{MinMax{T, I}}) where {T, I} = MinMax{T, I}(typemax(T), zero(I),
                  @inbounds simin[thread_id] = simin[thread_id + limit]
             end
 
-            if @inbounds smax[thread_id] < smax[thread_id + limit]
+            if @inbounds smax[thread_id] <= smax[thread_id + limit]
                  @inbounds smax[thread_id] = smax[thread_id + limit]
                  @inbounds simax[thread_id] = simax[thread_id + limit]
             end
@@ -92,7 +92,7 @@ end
                  @inbounds simin[thread_id] = simin[thread_id + limit]
             end
 
-            if @inbounds smax[thread_id] < smax[thread_id + limit]
+            if @inbounds smax[thread_id] <= smax[thread_id + limit]
                  @inbounds smax[thread_id] = smax[thread_id + limit]
                  @inbounds simax[thread_id] = simax[thread_id + limit]
             end
