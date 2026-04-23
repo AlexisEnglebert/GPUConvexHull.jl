@@ -84,7 +84,7 @@ using GPUConvexHull
 
     @testset "Multiblock Segmented scan" begin
         n_large = 20
-        mem_data_large = GPUConvexHull.ScanPrimitive.create_scan_primitive_context(backend, Int64, Int64, 8, n_large)
+        mem_data_large = GPUConvexHull.ScanPrimitive.create_scan_primitive_context(backend, Int64, Int64, 2, n_large)
 
         @testset "No segments" begin
             values = ones(Int64, n_large)
@@ -104,6 +104,18 @@ using GPUConvexHull
 
             expected = vcat(collect(1:9), collect(1:11))
             result = Array(GPUConvexHull.ScanPrimitive.segmented_scan(mem_data_large, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), backward=false, inclusive=true))
+            @test result == expected
+        end
+
+        @testset "Segment between two blocks reversed" begin
+            values = ones(Int64, n_large)
+            flags = zeros(Int64, n_large)
+            flags[1] = 1
+            flags[10] = 1
+
+            expected = vcat(reverse(collect(1:9)), reverse(collect(1:11)))
+            
+            result = Array(GPUConvexHull.ScanPrimitive.segmented_scan(mem_data_large, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), backward=true, inclusive=true))
             @test result == expected
         end
     end

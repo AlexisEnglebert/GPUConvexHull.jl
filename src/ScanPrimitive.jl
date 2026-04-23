@@ -14,7 +14,7 @@ struct AddOp end
 (::MaxOp)(a, b) = a > b ? a : b
 (::AddOp)(a, b) = a + b
 
-struct ScanPrimitiveContext{T, F, B, U_kernel, D_kernel, R_kernel, I_kernel, C_kernel, S_kernel}
+struct ScanPrimitiveContext{T, F, B, U_kernel, D_kernel, R_kernel, I_kernel, C_kernel, S_kernel, P_kernel}
     pyramid_partial_values::Vector{T}
     pyramid_partial_flags::Vector{F}
     pyramid_blocks_last_value::Vector{T}
@@ -35,6 +35,7 @@ struct ScanPrimitiveContext{T, F, B, U_kernel, D_kernel, R_kernel, I_kernel, C_k
     inclusive_kernell::I_kernel
     cyclic_kernell::C_kernel
     second_level_kernell::S_kernel
+    spread_kernell::P_kernel
 
 end
 
@@ -79,14 +80,14 @@ function create_scan_primitive_context(backend, val_type, flag_type, workgroup_s
     inclusive_kernell = inclusive_kernell!(backend, workgroup_size)
     cyclic_kernell = circshift_kernel(backend, workgroup_size)
     second_level_kernell = segmented_scan_second_level_kernell!(backend, top_level_tree_size ÷ 2)
-
+    spread_kernell = spread_head_flags!(backend, workgroup_size)
     # Mtn on build la pyramide:
 
 
     return ScanPrimitiveContext(pyramid_partial_values, pyramid_partial_flags, pyramid_blocks_last_value,
      pyramid_blocks_last_flag, pyramid_blocks_last_tree_flag, tmp_flags, backend, workgroup_size, top_level_tree_size,
      nb_block, upsweep_kernell, downsweep_kernell, reverse_kernell, inclusive_kernell,
-     cyclic_kernell, second_level_kernell)
+     cyclic_kernell, second_level_kernell, spread_kernell)
 end
 
 # Hmm à voir si on peut pas utiliser des grid en 3 dim pour rendre le calcul plus vite ?
@@ -324,6 +325,16 @@ end
     end
 end
 
+@kernel function spread_head_flags!(dst, src, stride)
+    global_id = @index(Global)
+    if global_id <= length(dst)
+        src_idx = (global_id - 1) * stride + 1
+        if src_idx <= length(src)
+            dst[global_id] = src[src_idx]
+        end
+    end
+end
+
 """
 segmented_scan(backend, values, flags, oplus::Function; backward=false, inclusive=false, identity::Number=0)
 
@@ -335,8 +346,8 @@ julia> segmented_scan()
 ```
 """
 
-function segmented_scan(context::ScanPrimitiveContext{T, F, B, U_kernel, D_kernel, R_kernel, I_kernel, C_kernel, S_kernel}, values, flags, oplus::Op;
-    backward=false, inclusive=false, identity::eltype(T) = zero(eltype(T)) ) where{Op, T, F, B, U_kernel, D_kernel, R_kernel, I_kernel, C_kernel, S_kernel}
+function segmented_scan(context::ScanPrimitiveContext{T, F, B, U_kernel, D_kernel, R_kernel, I_kernel, C_kernel, S_kernel, P_kernel}, values, flags, oplus::Op;
+    backward=false, inclusive=false, identity::eltype(T) = zero(eltype(T)) ) where{Op, T, F, B, U_kernel, D_kernel, R_kernel, I_kernel, C_kernel, S_kernel, P_kernel}
 
     if eltype(values) != typeof(identity)
         error("Identity type must be the same as values type. Got ")
@@ -403,15 +414,21 @@ function segmented_scan(context::ScanPrimitiveContext{T, F, B, U_kernel, D_kerne
     for level in 1:n_layers
         current_layer_size = layer_size[level]
         nb_block = cld(current_layer_size, elements_per_block)
-
+        
         context.upsweep_kernell(context.pyramid_partial_values[level], context.pyramid_partial_flags[level],
         context.pyramid_blocks_last_value[level], context.pyramid_blocks_last_tree_flag[level],
         context.pyramid_blocks_last_flag[level], current_input_values, current_layer_size,
         current_input_flags, oplus, Val(tree_size), identity, ndrange = tuple(nb_block * context.workgroup_size))
 
         KernelAbstractions.synchronize(context.backend)
-        current_input_values = context.pyramid_partial_values[level]
-        current_input_flags = context.pyramid_partial_flags[level]
+
+        if level > 1
+            context.spread_kernell(context.pyramid_blocks_last_flag[level], context.pyramid_blocks_last_flag[level-1], elements_per_block, ndrange = nb_block)
+            KernelAbstractions.synchronize(context.backend)
+        end
+
+        current_input_values = context.pyramid_blocks_last_value[level]
+        current_input_flags = context.pyramid_blocks_last_tree_flag[level]
     end
 
 
