@@ -9,59 +9,59 @@ using GPUConvexHull
         values = [1, 2, 3, 4]
         flags  = [1, 0, 0, 0]
         expected = [0, 1, 3, 6]
-        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(backend, mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0)) == expected
+        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0)) == expected
     end
     mem_data = GPUConvexHull.ScanPrimitive.create_scan_primitive_context(backend, Int64, Int64, 8, 6)
     @testset "exclusive forward scan with segments" begin
         values = [1, 1, 1, 1, 1, 1]
         flags  = [1, 0, 0, 1, 0, 1]
         expected = [0, 1, 2, 0, 1, 0]
-        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(backend, mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0)) == expected
+        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0)) == expected
     end
     @testset "inclusive forward scan NO segments" begin
         values = [1, 1, 1, 1, 1, 1]
         flags  = [1, 0, 0, 0, 0, 0]
         expected = [1, 2, 3, 4, 5, 6]
 
-        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(backend, mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0, backward=false, inclusive=true)) == expected
+        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0, backward=false, inclusive=true)) == expected
     end
     @testset "inclusive forward scan with segments" begin
         values = [1, 1, 1, 1, 1, 1]
         flags  = [1, 0, 0, 1, 0, 1]
         expected = [1, 2, 3, 1, 2, 1]
-        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(backend, mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0, backward=false, inclusive=true)) == expected
+        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0, backward=false, inclusive=true)) == expected
     end
     @testset "exclusive backward scan NO segments" begin
         values = [1, 1, 0, 0, 1, 1]
         flags  = [1, 0, 0, 0, 0, 0]
         expected = [3, 2, 2, 2, 1, 0]
-        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(backend, mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0, backward=true, inclusive=false)) == expected
+        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0, backward=true, inclusive=false)) == expected
     end
     @testset "exclusive backward scan with segments" begin
         values = [1, 1, 0, 0, 1, 1]
         flags  = [1, 0, 0, 1, 0, 0]
         expected = [1, 0, 0, 2, 1, 0]
-        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(backend, mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0, backward=true, inclusive=false)) == expected
+        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0, backward=true, inclusive=false)) == expected
     end
     @testset "inclusive backward scan NO segments" begin
         values = [1, 1, 0, 0, 1, 1]
         flags  = [1, 0, 0, 0, 0, 0]
         expected = [4, 3, 2, 2, 2, 1]
-        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(backend, mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0, backward=true, inclusive=true)) == expected
+        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0, backward=true, inclusive=true)) == expected
     end
     @testset "inclusive backward scan with segments" begin
         values = [1, 1, 0, 0, 1, 1]
         flags  = [1, 0, 0, 1, 0, 0]
         expected = [2, 1, 0, 2, 2, 1]
 
-        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(backend, mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0, backward=true, inclusive=true)) == expected
+        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0, backward=true, inclusive=true)) == expected
     end
     @testset "segmented scan with float" begin
         mem_data = GPUConvexHull.ScanPrimitive.create_scan_primitive_context(backend, Float64, Int64, 8, 6)
         values = [1.0, 2.5, 0, 0, 3.0, 0.5]
         flags  = [1, 0, 0, 0, 0, 0]
         expected = [1.0, 3.5, 3.5, 3.5, 6.5, 7.0]
-        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(backend, mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0.0, backward=false, inclusive=true)) == expected
+        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0.0, backward=false, inclusive=true)) == expected
     end
 
     @testset "Min & Max Operations" begin
@@ -71,14 +71,14 @@ using GPUConvexHull
             values = [1, 5, 2, 8, 3, 9]
             flags  = [1, 0, 0, 1, 0, 0]
             expected = [1, 5, 5, 8, 8, 9]
-            @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(backend, mem_data_max, values, flags, GPUConvexHull.ScanPrimitive.MaxOp(), identity=typemin(Int64), backward=false, inclusive=true)) == expected
+            @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(mem_data_max, values, flags, GPUConvexHull.ScanPrimitive.MaxOp(), identity=typemin(Int64), backward=false, inclusive=true)) == expected
         end
 
         @testset "inclusive backward scan MaxOp" begin
             values = [1, 5, 2, 8, 3, 9]
             flags  = [1, 0, 0, 1, 0, 0]
             expected = [5, 5, 2, 9, 9, 9]
-            @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(backend, mem_data_max, values, flags, GPUConvexHull.ScanPrimitive.MaxOp(), identity=typemin(Int64), backward=true, inclusive=true)) == expected
+            @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(mem_data_max, values, flags, GPUConvexHull.ScanPrimitive.MaxOp(), identity=typemin(Int64), backward=true, inclusive=true)) == expected
         end
     end
 
@@ -92,7 +92,7 @@ using GPUConvexHull
             flags[1] = 1
             expected = collect(1:n_large)
 
-            result = Array(GPUConvexHull.ScanPrimitive.segmented_scan(backend, mem_data_large, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0, backward=false, inclusive=true))
+            result = Array(GPUConvexHull.ScanPrimitive.segmented_scan(mem_data_large, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), backward=false, inclusive=true))
             @test result == expected
         end
 
@@ -103,7 +103,7 @@ using GPUConvexHull
             flags[10] = 1
 
             expected = vcat(collect(1:9), collect(1:11))
-            result = Array(GPUConvexHull.ScanPrimitive.segmented_scan(backend, mem_data_large, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0, backward=false, inclusive=true))
+            result = Array(GPUConvexHull.ScanPrimitive.segmented_scan(mem_data_large, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), backward=false, inclusive=true))
             @test result == expected
         end
     end
@@ -114,16 +114,16 @@ using GPUConvexHull
         flags  = [1, 1, 1, 1, 1, 1, 1, 1]
 
         expected_incl = [1, 2, 3, 4, 5, 6, 7, 8]
-        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(backend, mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0, backward=false, inclusive=true)) == expected_incl
+        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), backward=false, inclusive=true)) == expected_incl
 
         expected_excl = [0, 0, 0, 0, 0, 0, 0, 0]
-        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(backend, mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0, backward=false, inclusive=false)) == expected_excl
+        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), backward=false, inclusive=false)) == expected_excl
     end
 
     @testset "Everything is zero" begin
         values = zeros(Int64, 8)
         flags  = [1, 0, 0, 0, 1, 0, 0, 0]
         expected = zeros(Int64, 8)
-        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(backend, mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0, backward=false, inclusive=true)) == expected
+        @test Array(GPUConvexHull.ScanPrimitive.segmented_scan(mem_data, values, flags, GPUConvexHull.ScanPrimitive.AddOp(), identity=0, backward=false, inclusive=true)) == expected
     end
 end

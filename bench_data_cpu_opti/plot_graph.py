@@ -6,7 +6,7 @@ def get_data():
     for file in os.listdir("."):
         if file.endswith(".csv"):
             df = pd.read_csv(file)
-            df['version'] = file.split(".")[0]  # On ajoute une colonne pour identifier l'algorithme
+            df['version'] = file.split(".")[0]
             yield df
 
 all_data = list(get_data())

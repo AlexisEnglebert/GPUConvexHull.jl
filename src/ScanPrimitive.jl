@@ -15,7 +15,7 @@ struct AddOp end
 (::AddOp)(a, b) = a + b
 
 
-struct ScanPrimitiveContext{T, F, B}
+struct ScanPrimitiveContext{T, F, B, U_kernel, D_kernel, R_kernel, I_kernel}
     partial_values::T
     partial_flags::F
     blocks_last_value::T
@@ -28,10 +28,10 @@ struct ScanPrimitiveContext{T, F, B}
     nb_block::Int64
 
     # On stock les Kernels car il doivent être compilé qu'une seule fois (Évite de les compiler à chaque appel de segmented_scan & donc beaucoup plus rapide)
-    upsweep_kernell::KernelAbstractions.Kernel
-    downsweep_kernell::KernelAbstractions.Kernel
-    reverse_kernell::KernelAbstractions.Kernel
-    inclusive_kernell::KernelAbstractions.Kernel
+    upsweep_kernell::U_kernel
+    downsweep_kernell::D_kernel
+    reverse_kernell::R_kernel
+    inclusive_kernell::I_kernel
 
 end
 
@@ -310,7 +310,8 @@ julia> segmented_scan()
 ```
 """
 
-function segmented_scan(backend, context::ScanPrimitiveContext{T, F, B}, values, flags, oplus::Op; backward=false, inclusive=false, identity::eltype(T) = zero(eltype(T)) ) where{Op, T, F, B}
+function segmented_scan(context::ScanPrimitiveContext{T, F, B, U_kernel, D_kernel, R_kernel, I_kernel}, values, flags, oplus::Op; 
+    backward=false, inclusive=false, identity::eltype(T) = zero(eltype(T)) ) where{Op, T, F, B, U_kernel, D_kernel, R_kernel, I_kernel}
 
     if eltype(values) != typeof(identity)
         error("Identity type must be the same as values type. Got ")
@@ -320,15 +321,15 @@ function segmented_scan(backend, context::ScanPrimitiveContext{T, F, B}, values,
     values_gpu = values;
     flags_gpu = flags
 
-    if isa(values, Vector)
+    if isa(values, Vector) && KernelAbstractions.get_backend(values) != context.backend
         #@warn "Got a non GPU vector as values, converting it to GPU (slower). "
-        values_gpu = KernelAbstractions.allocate(backend, eltype(values), length(values))
+        values_gpu = KernelAbstractions.allocate(context.backend, eltype(values), length(values))
         copyto!(values_gpu, values)
     end
 
-    if isa(flags, Vector)
+    if isa(flags, Vector) && KernelAbstractions.get_backend(flags) != context.backend
         #@warn "Got a non GPU vector in flags, converting it to GPU array (slower)."
-        flags_gpu = KernelAbstractions.allocate(backend, eltype(flags), length(flags))
+        flags_gpu = KernelAbstractions.allocate(context.backend, eltype(flags), length(flags))
         copyto!(flags_gpu, flags)
     end
 
@@ -339,16 +340,16 @@ function segmented_scan(backend, context::ScanPrimitiveContext{T, F, B}, values,
     tmp_flags = []
     if backward
         context.reverse_kernell(values_gpu, n, ndrange = size(values_gpu))
-        KernelAbstractions.synchronize(backend)
+        KernelAbstractions.synchronize(context.backend)
         context.reverse_kernell(flags_gpu, n, ndrange = size(flags_gpu))
         copyto!(context.tmp_flags, 1, flags_gpu, 1, n)
-        KernelAbstractions.synchronize(backend)
+        KernelAbstractions.synchronize(context.backend)
 
-        gpu_circshift!(flags_gpu, 1, backend)
-        KernelAbstractions.synchronize(backend)
+        gpu_circshift!(flags_gpu, 1, context.backend)
+        KernelAbstractions.synchronize(context.backend)
     end
 
-    final_array           = KernelAbstractions.allocate(backend, eltype(values_gpu), Int(length(values_gpu)))
+    final_array           = KernelAbstractions.allocate(context.backend, eltype(values_gpu), Int(length(values_gpu)))
 
     fill!(context.partial_flags, 0)
     fill!(context.blocks_last_flag, 0)
@@ -363,28 +364,28 @@ function segmented_scan(backend, context::ScanPrimitiveContext{T, F, B}, values,
 
     context.upsweep_kernell(context.partial_values, context.partial_flags, context.blocks_last_value, context.blocks_last_tree_flag, context.blocks_last_flag, values_gpu, length(values_gpu),
     flags_gpu, oplus, Val(tree_size), identity, ndrange = tuple(context.nb_block * context.workgroup_size))
-    KernelAbstractions.synchronize(backend)
+    KernelAbstractions.synchronize(context.backend)
 
     segmented_blocks = segmented_scan_second_level_cpu!(
     context.blocks_last_value, context.nb_block, context.blocks_last_flag, context.blocks_last_tree_flag, oplus, identity)
 
     context.downsweep_kernell(final_array, context.partial_values, context.partial_flags, segmented_blocks, flags_gpu,
     n, oplus, Val(tree_size), identity, ndrange = tuple(context.nb_block * context.workgroup_size))
-    KernelAbstractions.synchronize(backend)
+    KernelAbstractions.synchronize(context.backend)
 
     if inclusive
         context.inclusive_kernell(final_array, values_gpu, oplus, ndrange = size(values_gpu))
-        KernelAbstractions.synchronize(backend)
+        KernelAbstractions.synchronize(context.backend)
     end
 
     if backward
         context.reverse_kernell(values_gpu, n, ndrange = size(values_gpu))
-        KernelAbstractions.synchronize(backend)
+        KernelAbstractions.synchronize(context.backend)
 
         context.reverse_kernell(context.tmp_flags, n, ndrange = n)
-        KernelAbstractions.synchronize(backend)
+        KernelAbstractions.synchronize(context.backend)
         context.reverse_kernell(final_array, n, ndrange = n)
-        KernelAbstractions.synchronize(backend)
+        KernelAbstractions.synchronize(context.backend)
 
         copyto!(flags_gpu, 1, context.tmp_flags, 1, n)
     end

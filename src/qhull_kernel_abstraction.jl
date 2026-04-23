@@ -103,7 +103,7 @@ function compact(backend, segment_mem_data, flags, segments, data, original_ids,
     global_head = KernelAbstractions.zeros(backend, Int64, in_length)
     copyto!(global_head, global_head_cpu)
 
-    p = segmented_scan(backend, segment_mem_data,flags, global_head, ScanPrimitive.AddOp())
+    p = segmented_scan(segment_mem_data,flags, global_head, ScanPrimitive.AddOp())
 
     p_last    = Vector{eltype(p)}(undef, 1)
     flag_last = Vector{eltype(flags)}(undef, 1)
@@ -116,7 +116,7 @@ function compact(backend, segment_mem_data, flags, segments, data, original_ids,
     segment_mask_kernel(backend, 16)(flags, p, head_indices, ndrange=in_length)
     KernelAbstractions.synchronize(backend)
 
-    propagated_heads = segmented_scan(backend, segment_mem_data, head_indices, segments, ScanPrimitive.MinOp(), backward=false, inclusive=true, identity=typemax(Int64))
+    propagated_heads = segmented_scan(segment_mem_data, head_indices, segments, ScanPrimitive.MinOp(), backward=false, inclusive=true, identity=typemax(Int64))
 
     out_points = KernelAbstractions.allocate(backend, Float64, Int.((dim, n)))
     permute_data_kernel(backend, 16)(out_points, data, flags, p, dim, ndrange = in_length)
@@ -223,15 +223,15 @@ function flag_permute(backend, segment_mem_data, flags, segments, data_size, n_f
     st = similar(segments)
     mark_segment_id(backend, 16)(st, segments, ndrange=length(segments))
 
-    sh = segmented_scan(backend, segment_mem_data, st, segments, ScanPrimitive.AddOp(), backward=false, inclusive=true)
+    sh = segmented_scan(segment_mem_data, st, segments, ScanPrimitive.AddOp(), backward=false, inclusive=true)
 
     for i = 1:n_flags
         col_masked   = @view maskedArray[:, i]
         col_scan     = @view scanArray[:, i]
         col_backscan = @view backscanArray[:, i]
 
-        col_scan     .= segmented_scan(backend, segment_mem_data, col_masked, segments, ScanPrimitive.AddOp(), inclusive=true)
-        col_backscan .= segmented_scan(backend, segment_mem_data, col_scan,   segments, ScanPrimitive.MaxOp(), backward=true, inclusive=true, identity=typemin(Int64))
+        col_scan     .= segmented_scan(segment_mem_data, col_masked, segments, ScanPrimitive.AddOp(), inclusive=true)
+        col_backscan .= segmented_scan(segment_mem_data, col_scan,   segments, ScanPrimitive.MaxOp(), backward=true, inclusive=true, identity=typemin(Int64))
     end
 
     # Now the flag permute kernell :)
@@ -327,7 +327,7 @@ function propagate_segment_idx(backend, segment_mem_data, segments)
     global_head_gpu = KernelAbstractions.allocate(backend, Int64, n)
     copyto!(global_head_gpu, global_head)
 
-    seg_id = segmented_scan(backend, segment_mem_data, segments, global_head_gpu, ScanPrimitive.AddOp(), backward=false, inclusive=true)
+    seg_id = segmented_scan(segment_mem_data, segments, global_head_gpu, ScanPrimitive.AddOp(), backward=false, inclusive=true)
     KernelAbstractions.synchronize(backend)
     return seg_id, Array(seg_id)[n]
 end
@@ -627,15 +627,15 @@ function quick_hull(backend, points, n_points = size(points, 2), dim = size(poin
         KernelAbstractions.synchronize(backend)
 
         # On propage le point le plus loins à travers le segement (forward + backward pass)
-        prefix_max = segmented_scan(backend, segment_mem_data_float, distances, rest_segment, ScanPrimitive.MaxOp(),  backward=false, inclusive=true, identity=typemin(Float64))
-        seg_max    = segmented_scan(backend, segment_mem_data_float, prefix_max, rest_segment, ScanPrimitive.MaxOp(), backward=true,  inclusive=true, identity=typemin(Float64))
+        prefix_max = segmented_scan(segment_mem_data_float, distances, rest_segment, ScanPrimitive.MaxOp(),  backward=false, inclusive=true, identity=typemin(Float64))
+        seg_max    = segmented_scan(segment_mem_data_float, prefix_max, rest_segment, ScanPrimitive.MaxOp(), backward=true,  inclusive=true, identity=typemin(Float64))
 
         cand_idx = KernelAbstractions.allocate(backend, Int64, n)
         mark_farthest_candidate_kernel(backend, 16)(cand_idx, distances, seg_max, 1e-12, ndrange=n)
         KernelAbstractions.synchronize(backend)
 
-        prefix_far = segmented_scan(backend, segment_mem_data_int, cand_idx, rest_segment, ScanPrimitive.MaxOp(), backward=false, inclusive=true, identity=typemin(Int64))
-        far_idx_p  = segmented_scan(backend, segment_mem_data_int, prefix_far, rest_segment, ScanPrimitive.MaxOp(), backward=true,  inclusive=true, identity=typemin(Int64))
+        prefix_far = segmented_scan(segment_mem_data_int, cand_idx, rest_segment, ScanPrimitive.MaxOp(), backward=false, inclusive=true, identity=typemin(Int64))
+        far_idx_p  = segmented_scan(segment_mem_data_int, prefix_far, rest_segment, ScanPrimitive.MaxOp(), backward=true,  inclusive=true, identity=typemin(Int64))
 
         far_idx  = KernelAbstractions.allocate(backend, Int64,  n_segs)
         far_dist = KernelAbstractions.allocate(backend, Float64, n_segs)
