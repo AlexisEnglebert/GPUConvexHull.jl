@@ -1,5 +1,6 @@
 module ScanPrimitive
 using KernelAbstractions
+using NVTX
 
 export segmented_scan, create_scan_primitive_context
 
@@ -306,6 +307,8 @@ julia> segmented_scan()
 function segmented_scan(context::ScanPrimitiveContext{T, F, B, U_kernel, D_kernel, R_kernel, I_kernel, C_kernel}, values, flags, oplus::Op;
     backward=false, inclusive=false, identity::eltype(T) = zero(eltype(T)) ) where{Op, T, F, B, U_kernel, D_kernel, R_kernel, I_kernel, C_kernel}
 
+
+    NVTX.@range "Segmented Scan Total" begin
     if eltype(values) != typeof(identity)
         error("Identity type must be the same as values type. Got ")
         return -1
@@ -354,16 +357,22 @@ function segmented_scan(context::ScanPrimitiveContext{T, F, B, U_kernel, D_kerne
 
     tree_size = 1 << ceil(Int, log2(context.workgroup_size * 2))
 
-    context.upsweep_kernell(context.partial_values, context.partial_flags, context.blocks_last_value, context.blocks_last_tree_flag, context.blocks_last_flag, values_gpu, length(values_gpu),
-    flags_gpu, oplus, Val(tree_size), identity, ndrange = tuple(context.nb_block * context.workgroup_size))
-    KernelAbstractions.synchronize(context.backend)
+    NVTX.@range "Upsweep Kernel" begin
+        context.upsweep_kernell(context.partial_values, context.partial_flags, context.blocks_last_value, context.blocks_last_tree_flag, context.blocks_last_flag, values_gpu, length(values_gpu),
+        flags_gpu, oplus, Val(tree_size), identity, ndrange = tuple(context.nb_block * context.workgroup_size))
+        KernelAbstractions.synchronize(context.backend)
+    end
+    
+    NVTX.@range "Second level CPU" begin
+        segmented_blocks = segmented_scan_second_level_cpu!(
+        context.blocks_last_value, context.nb_block, context.blocks_last_flag, context.blocks_last_tree_flag, oplus, identity)
+    end
 
-    segmented_blocks = segmented_scan_second_level_cpu!(
-    context.blocks_last_value, context.nb_block, context.blocks_last_flag, context.blocks_last_tree_flag, oplus, identity)
-
-    context.downsweep_kernell(final_array, context.partial_values, context.partial_flags, segmented_blocks, flags_gpu,
-    n, oplus, Val(tree_size), identity, ndrange = tuple(context.nb_block * context.workgroup_size))
-    KernelAbstractions.synchronize(context.backend)
+    NVTX.@range "Downsweep Kernel" begin
+        context.downsweep_kernell(final_array, context.partial_values, context.partial_flags, segmented_blocks, flags_gpu,
+        n, oplus, Val(tree_size), identity, ndrange = tuple(context.nb_block * context.workgroup_size))
+        KernelAbstractions.synchronize(context.backend)
+    end
 
     if inclusive
         context.inclusive_kernell(final_array, values_gpu, oplus, ndrange = size(values_gpu))
@@ -383,6 +392,7 @@ function segmented_scan(context::ScanPrimitiveContext{T, F, B, U_kernel, D_kerne
     end
 
     return final_array
+end
 end
 
 end
