@@ -2,6 +2,6 @@ module GPUConvexHull
 
 include("ScanPrimitive.jl")
 include("MinMaxReduction.jl")
-include("qhull_kernel_abstraction.jl")
+include("QuickHullGPU.jl")
 
 end # module GPUConvexHull

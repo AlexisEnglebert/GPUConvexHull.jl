@@ -6,9 +6,7 @@ function test_qhull(points, backend, expected)
     gpu_pts = KernelAbstractions.zeros(backend, Float64, size(points))
     copyto!(gpu_pts, points)
 
-    println("size: ", size(gpu_pts))
-    @show KernelAbstractions.get_backend(gpu_pts)
-    @show sol = GPUConvexHull.quick_hull(backend, gpu_pts)
+    sol = GPUConvexHull.quick_hull(backend, gpu_pts)
 
     sol_set = Set(eachcol(round.(sol.hull_points, digits=9)))
     expected_set = Set(eachcol(round.(expected, digits=9)))
@@ -49,7 +47,7 @@ end
 end
 
 @testset "2D lots of points inside a square" begin
-    corners = [-1.0  1.0  1.0 -1.0;
+    corners = [-1.0  1.0  1.0 -1.0
                -1.0 -1.0  1.0  1.0]
 
     internal_points = (rand(2, 100) .- 0.5) .* 1.5
@@ -69,10 +67,11 @@ end
     test_qhull(points, CPU(), expected)
 end
 
-@testset "3D cube with lots of points inside" begin
+# TODO: parfois il fail, faut investiguer... (à mon avis c'est quand les points sont trop proches (internal pts = 500))
+@testset "3D cube with lots of points inside" begin 
 
-    corners = [-1.0  1.0 -1.0  1.0 -1.0  1.0 -1.0  1.0;
-               -1.0 -1.0  1.0  1.0 -1.0 -1.0  1.0  1.0;
+    corners = [-1.0  1.0 -1.0  1.0 -1.0  1.0 -1.0  1.0
+               -1.0 -1.0  1.0  1.0 -1.0 -1.0  1.0  1.0
                -1.0 -1.0 -1.0 -1.0  1.0  1.0  1.0  1.0]
 
     internal_points = (rand(3, 50) .- 0.5) .* 1.8
@@ -91,10 +90,49 @@ end
         idx += 1
     end
 
-    internal_points = (rand(4, 100) .- 0.5) .* 1.6
+    internal_points = (rand(4, 1000) .- 0.5) .* 1.6
 
     points = hcat(corners, internal_points)
     expected = corners
 
+    test_qhull(points, CPU(), expected)
+end
+
+#= @testset "2D square (All points on the edges)" begin TODO: Foire aussi ce test à investiguer ...
+    points = zeros(Float64, 2, 25)
+    idx = 1
+    for x in -2:2, y in -2:2
+        points[:, idx] = [x, y]
+        idx += 1
+    end
+
+    expected = [-2.0  2.0  2.0 -2.0
+                -2.0 -2.0  2.0  2.0]
+    test_qhull(points, CPU(), expected)
+end =#
+
+@testset "2D rotated square with points inside" begin
+    points = [ 0.0  1.0  0.0 -1.0  0.5  0.5 -0.5 -0.5  0.0
+               1.0  0.0 -1.0  0.0  0.5 -0.5 -0.5  0.5  0.0]
+    
+    expected = [ 0.0  1.0  0.0 -1.0;
+                 1.0  0.0 -1.0  0.0]
+
+    test_qhull(points, CPU(), expected)
+end
+
+@testset "2D Triangle n==dim" begin
+    points = [0.0  1.0  0.5  0.5
+              0.0  0.0  1.0  0.2]
+              
+    expected = [0.0  1.0  0.5;
+                0.0  0.0  1.0]
+    test_qhull(points, CPU(), expected)
+end
+
+@testset "multiple same points" begin
+    points = fill(3.14, 2, 10)
+    expected = fill(3.14, 2, 1)
+    
     test_qhull(points, CPU(), expected)
 end
