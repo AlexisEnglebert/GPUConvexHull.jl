@@ -1,6 +1,5 @@
 using KernelAbstractions
 using LinearAlgebra
-using NVTX
 
 using .ScanPrimitive
 using .MinMaxReduction
