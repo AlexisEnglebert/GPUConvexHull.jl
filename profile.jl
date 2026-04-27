@@ -2,7 +2,7 @@ using Profile
 using GPUConvexHull
 using KernelAbstractions
 
-Profile.init(delay=0.000001)
+#Profile.init(delay=0.00001)
 
 backend = CPU()
 data = rand(3, 100_000)

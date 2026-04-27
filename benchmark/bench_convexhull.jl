@@ -1,18 +1,15 @@
 using BenchmarkTools
 using GPUConvexHull
 using KernelAbstractions
-using Plots
-using Dates, DataFrames, CSV
+using DataFrames, CSV
 
 function run_and_save_benchmarks(version_name, n_dimension, N_sizes)
     df = DataFrame(N = Int[], Time_ms = Float64[], Allocs = Int[], Memory_MiB = Float64[])
 
     for N in N_sizes
         data = rand(n_dimension, N)
-        # On lance le bench
         b = @benchmark GPUConvexHull.quick_hull(CPU(), $data) samples=5 evals=1
         
-        # On ajoute les résultats dans le DataFrame
         push!(df, (
             N = N, 
             Time_ms = median(b).time / 1e6, 
