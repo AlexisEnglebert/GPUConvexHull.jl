@@ -509,7 +509,7 @@ end
 
 
 function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::ScanPrimitive.ScanPrimitiveContext, 
-        segment_mem_data_int::ScanPrimitive.ScanPrimitiveContext, points::Matrix{Float64}, 
+        segment_mem_data_int::ScanPrimitive.ScanPrimitiveContext, points, 
         n_points::Int64 = size(points, 2), dim::Int64 = size(points, 1))
         @timeit to "Quickhull implem" begin
 
@@ -756,7 +756,7 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
     @show to
 end
 
-function quick_hull(backend, points::Matrix{Float64}, n_points::Int64 = size(points, 2), dim::Int64 = size(points, 1), workgroup_size::Int64 = 256)
+function quick_hull(backend, points, n_points::Int64 = size(points, 2), dim::Int64 = size(points, 1), workgroup_size::Int64 = 256)
     context = create_quickhull_context(backend, workgroup_size)
     segment_mem_data_float = create_scan_primitive_context(backend, Float64, Int64, workgroup_size, n_points)
     segment_mem_data_int = create_scan_primitive_context(backend, Int64, Int64, workgroup_size, n_points)

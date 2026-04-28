@@ -38,7 +38,7 @@ def run_and_save_benchmarks(version_name, n_dimension, n_sizes):
     
     return filename
 
-n_range = [10**2, 10**3, 10**4, 10**5, 10**6]
+n_range = [10**2, 10**3, 10**4, 10**5, 10**6, 10**7]
 n_dimension = 3
 
 filename = run_and_save_benchmarks("Qhull_SciPy_V1", n_dimension, n_range)
