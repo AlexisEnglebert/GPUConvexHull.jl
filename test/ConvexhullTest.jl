@@ -10,7 +10,7 @@ function test_qhull(points, backend, expected)
 
     sol_set = Set(eachcol(round.(sol.hull_points, digits=9)))
     expected_set = Set(eachcol(round.(expected, digits=9)))
-
+    @show sol_set
     @test isempty(setdiff(sol_set, expected_set)) && isempty(setdiff(expected_set, sol_set))
 end
 
@@ -98,7 +98,7 @@ end
     test_qhull(points, CPU(), expected)
 end
 
-#= @testset "2D square (All points on the edges)" begin TODO: Foire aussi ce test à investiguer ...
+ #=@testset "2D square (All points on the edges)" begin #TODO: Foire ce test, la sortie est correcte mais certains points pourraient être discord (colinéaire avec le convexhull)
     points = zeros(Float64, 2, 25)
     idx = 1
     for x in -2:2, y in -2:2
@@ -108,6 +108,7 @@ end
 
     expected = [-2.0  2.0  2.0 -2.0
                 -2.0 -2.0  2.0  2.0]
+    
     test_qhull(points, CPU(), expected)
 end =#
 

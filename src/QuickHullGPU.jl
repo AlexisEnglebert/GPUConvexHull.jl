@@ -29,13 +29,18 @@ struct QuickHullContext{BACKEND}
     
     backend::BACKEND
     workgroup_size::Int64
+    default_segment::AbstractArray
 end
 
-function create_quickhull_context(backend, workgroup_size)
+function create_quickhull_context(backend, workgroup_size, n_points)
     
+    default_segment = KernelAbstractions.zeros(backend, Int64, n_points)
+    default_segment[1] = 1
+
     return QuickHullContext(
         backend,
-        workgroup_size)
+        workgroup_size,
+        default_segment)
 end
 
 """
@@ -109,15 +114,8 @@ Returns a vector p, a permutation of data and a vector sp, a permutation of segm
 
 ```
 """
-function compact(backend, segment_mem_data, flags, segments, data, original_ids, in_length, dim)
-     #TODO: ça; ça peut être mieux, faut juste voir comment mieux faire pour les donnés GPU
-    global_head_cpu = zeros(Int64, in_length)
-    global_head_cpu[1] = 1
-
-    global_head = KernelAbstractions.zeros(backend, Int64, in_length)
-    copyto!(global_head, global_head_cpu)
-
-    p = segmented_scan(segment_mem_data,flags, global_head, ScanPrimitive.AddOp())
+function compact(context::QuickHullContext, segment_mem_data, flags, segments, data, original_ids, in_length, dim)
+    p = segmented_scan(segment_mem_data,flags, context.default_segment , ScanPrimitive.AddOp())
 
     p_last    = Vector{eltype(p)}(undef, 1)
     flag_last = Vector{eltype(flags)}(undef, 1)
@@ -126,27 +124,27 @@ function compact(backend, segment_mem_data, flags, segments, data, original_ids,
     copyto!(flag_last, 1, flags, in_length, 1)
     n = Int(p_last[1]) + Int(flag_last[1]) # On ajoute le b[n] car on est en exclusive scan =))
 
-    head_indices = KernelAbstractions.allocate(backend, Int64, in_length)
-    segment_mask_kernel(backend, 16)(flags, p, head_indices, ndrange=in_length)
-    KernelAbstractions.synchronize(backend)
+    head_indices = KernelAbstractions.allocate(context.backend, Int64, in_length)
+    segment_mask_kernel(context.backend, context.workgroup_size)(flags, p, head_indices, ndrange=in_length)
+    KernelAbstractions.synchronize(context.backend)
 
     propagated_heads = segmented_scan(segment_mem_data, head_indices, segments, ScanPrimitive.MinOp(), backward=false, inclusive=true, identity=typemax(Int64))
 
-    out_points = KernelAbstractions.allocate(backend, Float64, Int.((dim, n)))
-    permute_data_kernel(backend, 16)(out_points, data, flags, p, dim, ndrange = in_length)
-    KernelAbstractions.synchronize(backend)
+    out_points = KernelAbstractions.allocate(context.backend, Float64, Int.((dim, n)))
+    permute_data_kernel(context.backend, context.workgroup_size)(out_points, data, flags, p, dim, ndrange = in_length)
+    KernelAbstractions.synchronize(context.backend)
 
-    sp_out = KernelAbstractions.zeros(backend, Int64, n)
-    permute_sp_kernel(backend, 16)(sp_out, propagated_heads, flags, p, ndrange=in_length)
-    KernelAbstractions.synchronize(backend)
+    sp_out = KernelAbstractions.zeros(context.backend, Int64, n)
+    permute_sp_kernel(context.backend, context.workgroup_size)(sp_out, propagated_heads, flags, p, ndrange=in_length)
+    KernelAbstractions.synchronize(context.backend)
 
-    new_segments = KernelAbstractions.zeros(backend, Int, n)
-    detect_heads_kernel(backend, 16)(new_segments, sp_out, n, ndrange=n)
-    KernelAbstractions.synchronize(backend)
+    new_segments = KernelAbstractions.zeros(context.backend, Int, n)
+    detect_heads_kernel(context.backend, context.workgroup_size)(new_segments, sp_out, n, ndrange=n)
+    KernelAbstractions.synchronize(context.backend)
 
-    out_ids = KernelAbstractions.allocate(backend, Int64, n)
-    permute_indices_kernel(backend, 16)(out_ids, original_ids, flags, p, ndrange=in_length)
-    KernelAbstractions.synchronize(backend)
+    out_ids = KernelAbstractions.allocate(context.backend, Int64, n)
+    permute_indices_kernel(context.backend, context.workgroup_size)(out_ids, original_ids, flags, p, ndrange=in_length)
+    KernelAbstractions.synchronize(context.backend)
 
     return out_points, out_ids, new_segments, p, flags, n
 end
@@ -238,14 +236,10 @@ give a permutation vector to permute flags in given segments in order to sort th
 julia> flag_permute(.....)
 ```
 """
-function flag_permute(backend, segment_mem_data, flags, segments, data_size, n_flags)
-
-    if any(p -> p > n_flags || p < 1, flags)
-        error("Flag values should be between 1 and n_flags")
-    end 
-    out_permutation = AcceleratedKernels.sortperm(flags, block_size=256)
+function flag_permute(context::QuickHullContext, flags, segments)
+    out_permutation = AcceleratedKernels.sortperm(flags, block_size=context.workgroup_size)
     # Recreate segments heads
-    rebuild_segments_kernel!(backend, 256)(segments, flags, out_permutation, ndrange=length(segments))
+    rebuild_segments_kernel!(context.backend, context.workgroup_size)(segments, flags, out_permutation, ndrange=length(segments))
     return out_permutation
 end
 
@@ -330,19 +324,11 @@ end
     end
 end
 
-
-
-
-function propagate_segment_idx(backend, segment_mem_data, segments)
+function propagate_segment_idx(context::QuickHullContext, segment_mem_data, segments)
     n = length(segments)
-    global_head = zeros(n)
-    global_head[1] = 1
-
-    global_head_gpu = KernelAbstractions.allocate(backend, Int64, n)
-    copyto!(global_head_gpu, global_head)
-
-    seg_id = segmented_scan(segment_mem_data, segments, global_head_gpu, ScanPrimitive.AddOp(), backward=false, inclusive=true)
-    KernelAbstractions.synchronize(backend)
+    
+    seg_id = segmented_scan(segment_mem_data, segments, context.default_segment, ScanPrimitive.AddOp(), backward=false, inclusive=true)
+    KernelAbstractions.synchronize(context.backend)
     return seg_id, Array(seg_id)[n]
 end
 
@@ -509,23 +495,17 @@ end
 
 
 function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::ScanPrimitive.ScanPrimitiveContext, 
-        segment_mem_data_int::ScanPrimitive.ScanPrimitiveContext, points, 
-        n_points::Int64 = size(points, 2), dim::Int64 = size(points, 1))
+        segment_mem_data_int::ScanPrimitive.ScanPrimitiveContext, points, n_points::Int64 = size(points, 2), dim::Int64 = size(points, 1))
+
         @timeit to "Quickhull implem" begin
 
         result = QhullResult(zeros(Float64, dim, 0), Int64[], Vector{Float64}[])
         n_iter = 0
 
         # All Allocations
-        
         original_ids_cpu = collect(1:n_points)
         original_ids = KernelAbstractions.allocate(context.backend, Int64, n_points)
         copyto!(original_ids, original_ids_cpu)
-
-        segments_cpu = fill(0, n_points)
-        segments_cpu[1] = 1
-        segments = KernelAbstractions.zeros(context.backend, Int64, n_points)
-        copyto!(segments, segments_cpu)
 
         mesh = mesh = QhullData(
             Vector{Int}[],
@@ -556,7 +536,7 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
             assign_face_to_point_kernel(context.backend, context.workgroup_size)(face_flags_gpu, compact_flags_gpu, points, face_normals_gpu, face_offsets_gpu, dim, ndrange=n_points)
             KernelAbstractions.synchronize(context.backend)
         end
-        restant, original_ids, rest_segment, cp, cflags, cn = compact(context.backend, segment_mem_data_int,compact_flags_gpu, segments, points, original_ids, n_points, dim)
+        restant, original_ids, rest_segment, cp, cflags, cn = compact(context, segment_mem_data_int,compact_flags_gpu, context.default_segment, points, original_ids, n_points, dim)
 
         @timeit to "Remove points inside simplex" begin
             # Remove null flags
@@ -574,7 +554,7 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
             mapped_flags_gpu = KernelAbstractions.allocate(context.backend, Int64, size(restant, 2))
             copyto!(mapped_flags_gpu, mapped_flags_cpu)
 
-            out_perm = flag_permute(context.backend, segment_mem_data_int, mapped_flags_gpu, rest_segment, size(restant, 2), n_active)
+            out_perm = flag_permute(context,mapped_flags_gpu, rest_segment)
 
             restant_new = KernelAbstractions.zeros(context.backend, Float64, (dim, size(restant, 2)))
             ids_new = KernelAbstractions.zeros(context.backend, Int64, size(restant, 2))
@@ -598,7 +578,7 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                 #println("######### NEW ITTERATION $n_iter ############")
                 #TODO: ce code sert un peu à rien ....
                  @timeit to "Get farthest points" begin
-                    seg_id, n_segs = propagate_segment_idx(context.backend, segment_mem_data_int,rest_segment)
+                    seg_id, n_segs = propagate_segment_idx(context, segment_mem_data_int,rest_segment)
                     n = size(restant, 2)
                     
                     if n_segs == 0
@@ -699,19 +679,20 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                 end
 
                 @timeit to "Remove points inside convexhull" begin
+
                 @timeit to "Compact" begin
-                global_seg_reset = zeros(Int64, size(restant, 2))
-                if length(global_seg_reset) > 0
-                    global_seg_reset[1] = 1
-                end
-                copyto!(rest_segment, global_seg_reset)
+                    global_seg_reset = zeros(Int64, size(restant, 2))
+                    if length(global_seg_reset) > 0
+                        global_seg_reset[1] = 1
+                    end
+                    copyto!(rest_segment, global_seg_reset)
 
-                # Now Remove points inside
-                restant, original_ids, rest_segment, cp, cflags, cn = compact(context.backend, segment_mem_data_int, compact_flags_gpu, rest_segment, restant, original_ids, n, dim)
+                    # Now Remove points inside
+                    restant, original_ids, rest_segment, cp, cflags, cn = compact(context, segment_mem_data_int, compact_flags_gpu, rest_segment, restant, original_ids, n, dim)
 
-                if length(restant) == 0
-                    break
-                end
+                    if length(restant) == 0
+                        break
+                    end
                 end
 
                 @timeit to "create data for falg permute & permute indices" begin
@@ -730,7 +711,7 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                 copyto!(mapped_flags_gpu, mapped_flags_cpu)
                 end
                 @timeit to "flag permute" begin
-                out_perm = flag_permute(context.backend, segment_mem_data_int, mapped_flags_gpu, rest_segment, size(restant, 2), n_active)
+                out_perm = flag_permute(context, mapped_flags_gpu, rest_segment)
                 end
 
                 @timeit to "permute points" begin
@@ -756,8 +737,8 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
     @show to
 end
 
-function quick_hull(backend, points, n_points::Int64 = size(points, 2), dim::Int64 = size(points, 1), workgroup_size::Int64 = 256)
-    context = create_quickhull_context(backend, workgroup_size)
+function quick_hull(backend, points, n_points::Int64 = size(points, 2), workgroup_size::Int64 = 256)
+    context = create_quickhull_context(backend, workgroup_size, n_points)
     segment_mem_data_float = create_scan_primitive_context(backend, Float64, Int64, workgroup_size, n_points)
     segment_mem_data_int = create_scan_primitive_context(backend, Int64, Int64, workgroup_size, n_points)
 
