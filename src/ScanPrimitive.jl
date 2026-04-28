@@ -14,7 +14,7 @@ struct AddOp end
 (::MaxOp)(a, b) = a > b ? a : b
 (::AddOp)(a, b) = a + b
 
-struct ScanPrimitiveContext{T, F, B, U_kernel, D_kernel, R_kernel, I_kernel, C_kernel, S_kernel, P_kernel}
+struct ScanPrimitiveContext{T, F, B}
     pyramid_partial_values::Vector{T}
     pyramid_partial_flags::Vector{F}
     pyramid_blocks_last_value::Vector{T}
@@ -28,14 +28,6 @@ struct ScanPrimitiveContext{T, F, B, U_kernel, D_kernel, R_kernel, I_kernel, C_k
     top_level_tree_size::Int64
     nb_block::Int64
 
-    # On stock les Kernels car il doivent être compilé qu'une seule fois (Évite de les compiler à chaque appel de segmented_scan & donc beaucoup plus rapide)
-    upsweep_kernell::U_kernel
-    downsweep_kernell::D_kernel
-    reverse_kernell::R_kernel
-    inclusive_kernell::I_kernel
-    cyclic_kernell::C_kernel
-    second_level_kernell::S_kernel
-    spread_kernell::P_kernel
     layer_sizes::Vector{Int64}
 
 end
@@ -78,21 +70,9 @@ function create_scan_primitive_context(backend, val_type, flag_type, workgroup_s
 
     tmp_flags             = KernelAbstractions.zeros(backend, flag_type,  Int(n))
 
-    upsweep_kernell = segmented_scan_inner_block_upsweep!(backend, workgroup_size)
-    downsweep_kernell = segmented_scan_inner_block_downsweep!(backend, workgroup_size)
-
-    reverse_kernell = reverse_kernel!(backend, workgroup_size)
-    inclusive_kernell = inclusive_kernell!(backend, workgroup_size)
-    cyclic_kernell = circshift_kernel(backend, workgroup_size)
-    second_level_kernell = segmented_scan_second_level_kernell!(backend, top_level_tree_size ÷ 2)
-    spread_kernell = spread_head_flags!(backend, workgroup_size)
-    # Mtn on build la pyramide:
-
-
     return ScanPrimitiveContext(pyramid_partial_values, pyramid_partial_flags, pyramid_blocks_last_value,
      pyramid_blocks_last_flag, pyramid_blocks_last_tree_flag, tmp_flags, backend, workgroup_size, top_level_tree_size,
-     nb_block, upsweep_kernell, downsweep_kernell, reverse_kernell, inclusive_kernell,
-     cyclic_kernell, second_level_kernell, spread_kernell, layer_size)
+     nb_block, layer_size)
 end
 
 # Hmm à voir si on peut pas utiliser des grid en 3 dim pour rendre le calcul plus vite ?
@@ -350,8 +330,8 @@ end
     end
 end
 
-function segmented_scan(context::ScanPrimitiveContext{T, F, B, U_kernel, D_kernel, R_kernel, I_kernel, C_kernel, S_kernel, P_kernel}, values, flags, oplus::Op;
-    backward=false, inclusive=false, identity::eltype(T) = zero(eltype(T)) ) where{Op, T, F, B, U_kernel, D_kernel, R_kernel, I_kernel, C_kernel, S_kernel, P_kernel}
+function segmented_scan(context::ScanPrimitiveContext{T, F, B}, values, flags, oplus::Op;
+    backward=false, inclusive=false, identity::eltype(T) = zero(eltype(T)) ) where{Op, T, F, B}
 
 
     if eltype(values) != typeof(identity)
@@ -381,15 +361,13 @@ function segmented_scan(context::ScanPrimitiveContext{T, F, B, U_kernel, D_kerne
     n = length(values_gpu)
 
     if backward
-        context.reverse_kernell(values_gpu, n, ndrange = size(values_gpu))
+        reverse_kernel!(context.backend, context.workgroup_size)(values_gpu, n, ndrange = size(values_gpu))
         KernelAbstractions.synchronize(context.backend)
-        context.reverse_kernell(flags_gpu, n, ndrange = size(flags_gpu))
+        reverse_kernel!(context.backend, context.workgroup_size)(flags_gpu, n, ndrange = size(flags_gpu))
         copyto!(context.tmp_flags, 1, flags_gpu, 1, n)
         KernelAbstractions.synchronize(context.backend)
 
-
-        tmp = copy(flags_gpu)
-        context.cyclic_kernell(flags_gpu, tmp, 1, ndrange=length(flags_gpu))
+        circshift_kernel(context.backend, context.workgroup_size)(flags_gpu, context.tmp_flags, 1, ndrange=length(flags_gpu))
         KernelAbstractions.synchronize(context.backend)
     end
 
@@ -421,7 +399,7 @@ function segmented_scan(context::ScanPrimitiveContext{T, F, B, U_kernel, D_kerne
         current_layer_size = layer_size[level]
         nb_block = cld(current_layer_size, elements_per_block)
         actual_data_size = (level == 1) ? n : current_layer_size
-        context.upsweep_kernell(context.pyramid_partial_values[level], context.pyramid_partial_flags[level],
+        segmented_scan_inner_block_upsweep!(context.backend, context.workgroup_size)(context.pyramid_partial_values[level], context.pyramid_partial_flags[level],
         context.pyramid_blocks_last_value[level], context.pyramid_blocks_last_tree_flag[level],
         context.pyramid_blocks_last_flag[level], current_input_values, actual_data_size,
         current_input_flags, oplus, Val(tree_size), identity, ndrange = tuple(nb_block * context.workgroup_size))
@@ -429,7 +407,7 @@ function segmented_scan(context::ScanPrimitiveContext{T, F, B, U_kernel, D_kerne
         KernelAbstractions.synchronize(context.backend)
 
         if level > 1
-            context.spread_kernell(context.pyramid_blocks_last_flag[level], context.pyramid_blocks_last_flag[level-1], elements_per_block, ndrange = nb_block)
+            spread_head_flags!(context.backend, context.workgroup_size)(context.pyramid_blocks_last_flag[level], context.pyramid_blocks_last_flag[level-1], elements_per_block, ndrange = nb_block)
             KernelAbstractions.synchronize(context.backend)
         end
 
@@ -437,7 +415,7 @@ function segmented_scan(context::ScanPrimitiveContext{T, F, B, U_kernel, D_kerne
         current_input_flags = context.pyramid_blocks_last_tree_flag[level]
     end
 
-    context.second_level_kernell(context.pyramid_blocks_last_value[n_layers], context.pyramid_blocks_last_flag[n_layers],
+    segmented_scan_second_level_kernell!(context.backend, context.workgroup_size)(context.pyramid_blocks_last_value[n_layers], context.pyramid_blocks_last_flag[n_layers],
     context.pyramid_blocks_last_tree_flag[n_layers], layer_size[end], oplus, Val(context.top_level_tree_size), identity, ndrange = tuple(context.top_level_tree_size ÷ 2))
     KernelAbstractions.synchronize(context.backend)
 
@@ -454,7 +432,7 @@ function segmented_scan(context::ScanPrimitiveContext{T, F, B, U_kernel, D_kerne
 
         nb_blocks = cld(val_size, elements_per_block)
 
-        context.downsweep_kernell(val_output, context.pyramid_partial_values[level], context.pyramid_partial_flags[level],
+        segmented_scan_inner_block_downsweep!(context.backend, context.workgroup_size)(val_output, context.pyramid_partial_values[level], context.pyramid_partial_flags[level],
         context.pyramid_blocks_last_value[level], val_flags, val_size, oplus, Val(tree_size), identity,
         ndrange = tuple(nb_blocks * context.workgroup_size))
 
@@ -464,17 +442,17 @@ function segmented_scan(context::ScanPrimitiveContext{T, F, B, U_kernel, D_kerne
 
 
     if inclusive
-        context.inclusive_kernell(final_array, values_gpu, oplus, ndrange = size(values_gpu))
+        inclusive_kernell!(context.backend, context.workgroup_size)(final_array, values_gpu, oplus, ndrange = size(values_gpu))
         KernelAbstractions.synchronize(context.backend)
     end
 
     if backward
-        context.reverse_kernell(values_gpu, n, ndrange = size(values_gpu))
+        reverse_kernel!(context.backend, context.workgroup_size)(values_gpu, n, ndrange = size(values_gpu))
         KernelAbstractions.synchronize(context.backend)
 
-        context.reverse_kernell(context.tmp_flags, n, ndrange = n)
+        reverse_kernel!(context.backend, context.workgroup_size)(context.tmp_flags, n, ndrange = n)
         KernelAbstractions.synchronize(context.backend)
-        context.reverse_kernell(final_array, n, ndrange = n)
+        reverse_kernel!(context.backend, context.workgroup_size)(final_array, n, ndrange = n)
         KernelAbstractions.synchronize(context.backend)
 
         copyto!(flags_gpu, 1, context.tmp_flags, 1, n)

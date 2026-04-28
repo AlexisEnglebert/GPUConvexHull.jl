@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = ["Alexis Englebert <englebert.alexis@gmail.com>"]
 
 [deps]
+AcceleratedKernels = "6a4ca0a5-0e36-4168-a932-d9be78d558f1"
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
@@ -14,6 +15,7 @@ Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
 TimerOutputs = "a759f4b9-e2f1-59dc-863e-4aeb61b1ea8f"
 
 [compat]
+AcceleratedKernels = "0.4.3"
 BenchmarkTools = "1.8.0"
 CSV = "0.10.16"
 DataFrames = "1.8.2"

@@ -1,7 +1,7 @@
 using BenchmarkTools
 using GPUConvexHull
 using KernelAbstractions
-using DataFrames, CSV
+using DataFrames, CSV, Dates
 
 function run_and_save_benchmarks(version_name, n_dimension, N_sizes)
     df = DataFrame(N = Int[], Time_ms = Float64[], Allocs = Int[], Memory_MiB = Float64[])

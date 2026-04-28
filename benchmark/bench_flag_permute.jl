@@ -6,11 +6,11 @@ using BenchmarkTools
 backend = CPU()
 
 n_points = 100_000
-
+n_flags = 100
 data1_gpu = KernelAbstractions.allocate(backend, Int64, n_points)
 data2_gpu = KernelAbstractions.allocate(backend, Int64, n_points)
 
-data2 = rand(1:10, n_points)
+data2 = rand(1:n_flags, n_points)
 data1 = rand(Bool, n_points)
 
 copy!(data1_gpu, data1)
@@ -21,6 +21,6 @@ mem_data = GPUConvexHull.ScanPrimitive.create_scan_primitive_context(backend, In
 context = GPUConvexHull.create_quickhull_context(backend, 256)
 
 res = @benchmark GPUConvexHull.flag_permute(context.backend, $mem_data, $data2_gpu
-        ,$data1_gpu, n_points, 10)
+        ,$data1_gpu, n_points, n_flags)
 
 display(res)

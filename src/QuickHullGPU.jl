@@ -1,13 +1,14 @@
 using KernelAbstractions
 using LinearAlgebra
 using TimerOutputs
+using AcceleratedKernels
 
 using .ScanPrimitive
 using .MinMaxReduction
 
 const EPSILON = 1e-9
 const to = TimerOutput()
-
+disable_timer!(to)
 
 mutable struct QhullData
     vertices::Vector{Vector{Int}}
@@ -93,7 +94,7 @@ end
 
 @kernel function permute_kernel(out, data, perm)
     global_id = @index(Global)
-    out[perm[global_id]] = data[global_id]
+    out[global_id] = data[perm[global_id]]
 end
 """
 compact(flags, segments, data, length, dim)
@@ -207,6 +208,24 @@ end
     output[global_id] = (segments[global_id] == 1) ? global_id : 0
 end
 
+@kernel function rebuild_segments_kernel!(new_segments, flags, permutation)
+    global_id = @index(Global)
+    n = length(flags)
+    
+    if global_id == 1
+        new_segments[1] = 1
+    elseif global_id <= n
+        curr_idx = permutation[global_id]
+        prev_idx = permutation[global_id-1]
+        
+        if flags[curr_idx] != flags[prev_idx]
+            new_segments[global_id] = 1
+        else
+            new_segments[global_id] = 0
+        end
+    end
+end
+
 #TODO je pense vraiment qu'on peut optimiser ça et trouver une autre routine ça pourrait faire gagner
 # pas mal de perf je pense vu que c'est une des composante principale
 """
@@ -223,57 +242,11 @@ function flag_permute(backend, segment_mem_data, flags, segments, data_size, n_f
 
     if any(p -> p > n_flags || p < 1, flags)
         error("Flag values should be between 1 and n_flags")
-    end
-
-    @timeit to "Flag perm: Array creation" begin
-
-    maskedArray   = KernelAbstractions.zeros(backend, Int64, (length(flags), n_flags))
-    scanArray     = KernelAbstractions.zeros(backend, Int64, (length(flags), n_flags))
-    backscanArray = KernelAbstractions.zeros(backend, Int64, (length(flags), n_flags))
-    
-    end
-
-    @timeit to "Flag per: mask 2d kernel & sh" begin
-    # OUAAAIIIIS UNE MATRICE DE KERNELLL
-    mask_2d_kernel(backend, (16, 16))(maskedArray, flags, n_flags, ndrange=(length(flags), n_flags))
-    KernelAbstractions.synchronize(backend)
-
-    st = similar(segments)
-    mark_segment_id(backend, 16)(st, segments, ndrange=length(segments))
-
-    sh = segmented_scan(segment_mem_data, st, segments, ScanPrimitive.AddOp(), backward=false, inclusive=true)
-    end
-    @timeit to "Flag per: Array filling with seg" begin
-   for i = 1:n_flags
-        col_masked = maskedArray[:, i]
-        
-        @timeit to "Flag per: Segmented scab" begin
-        res_scan = segmented_scan(segment_mem_data, col_masked, segments, ScanPrimitive.AddOp(), inclusive=true)
-        end
-
-        @timeit to "Flag per: array assignation" begin
-        scanArray[:, i] = res_scan
-        end
-        
-        @timeit to "Flag per: backward scan" begin
-        res_backscan = segmented_scan(segment_mem_data, res_scan, segments, ScanPrimitive.MaxOp(), backward=true, inclusive=true, identity=typemin(Int64))
-        end
-
-        @timeit to "Flag per: back array assignation" begin
-        backscanArray[:, i] = res_backscan
-        end
-    end
-    end
-
-    @timeit to "Falg per: Create permutation" begin
-    # Now the flag permute kernell :)
-    outPermutation = similar(flags)
-    flag_permute_kernell(backend, 16)(scanArray, backscanArray, sh, flags, data_size, outPermutation, ndrange=first(size(scanArray)))
-
-    # Add segment kernell
-    add_segment_kernel(backend, 16)(backscanArray, segments, sh, n_flags, ndrange=first(size(scanArray)))
-    end
-    return outPermutation
+    end 
+    out_permutation = AcceleratedKernels.sortperm(flags, block_size=256)
+    # Recreate segments heads
+    rebuild_segments_kernel!(backend, 256)(segments, flags, out_permutation, ndrange=length(segments))
+    return out_permutation
 end
 
 
@@ -353,7 +326,7 @@ end
 @kernel function permute_points_kernel(out, data, perm, @uniform dim)
     global_id = @index(Global)
     for d in 1:dim
-        out[d, perm[global_id]] = data[d, global_id]
+        out[d, global_id] = data[d, perm[global_id]]
     end
 end
 
@@ -374,16 +347,16 @@ function propagate_segment_idx(backend, segment_mem_data, segments)
 end
 
 @kernel function distance_to_face_kernel(distances, points, seg_id, seg_to_face_map, normals, offsets, @uniform dim)
-    gid = @index(Global)
+    global_id = @index(Global)
     n = length(seg_id)
-    if gid <= n
-        sid = seg_id[gid]
-        face_col = seg_to_face_map[sid]
-        acc = 0.0
+    if global_id <= n
+        segment_id = seg_id[global_id]
+        face_id = seg_to_face_map[segment_id]
+            acc = 0.0
         for d in 1:dim
-            acc += points[d, gid] * normals[d, face_col]
+            acc += points[d, global_id] * normals[d, face_id]
         end
-        distances[gid] = acc + offsets[face_col]
+        distances[global_id] = acc + offsets[face_id]
     end
 end
 
@@ -623,7 +596,6 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
         while size(restant, 2) > 0
             @timeit to "Quickhull looop" begin
                 #println("######### NEW ITTERATION $n_iter ############")
-
                 #TODO: ce code sert un peu à rien ....
                  @timeit to "Get farthest points" begin
                     seg_id, n_segs = propagate_segment_idx(context.backend, segment_mem_data_int,rest_segment)
@@ -640,7 +612,6 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                     #TODO: à la place d'utiliser le seg_to_face truc on utilise les flags, car les faces ont déjà été assignés .....
                     distance_to_face_kernel(context.backend, context.workgroup_size)(distances, restant, seg_id, seg_to_face_map_gpu, face_normals_gpu, face_offsets_gpu, dim, ndrange=n)
                     KernelAbstractions.synchronize(context.backend)
-
                     # On propage le point le plus loins à travers le segement (forward + backward pass)
                     prefix_max = segmented_scan(segment_mem_data_float, distances, rest_segment, ScanPrimitive.MaxOp(),  backward=false, inclusive=true, identity=typemin(Float64))
                     seg_max    = segmented_scan(segment_mem_data_float, prefix_max, rest_segment, ScanPrimitive.MaxOp(), backward=true,  inclusive=true, identity=typemin(Float64))
@@ -660,9 +631,9 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                     far_dist = Array(far_dist)
                     original_ids_cpu = Array(original_ids)
                     active_face_indices = findall(mesh.active)
-                    #println("far_idx:", far_idx)
                 end
                  @timeit to "Add possible point to convexhull" begin
+                
                 candidates = NamedTuple{(:dist, :local_idx, :seg_idx), Tuple{Float64, Int64, Int64}}[]
                 for i in 1:n_segs
                     if far_idx[i] != 0 && far_dist[i] > EPSILON
@@ -699,7 +670,6 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                 end
 
                 for (point_idx, face_id) in points_to_insert
-                    #println("Adding to the convexhull : ", points[:, point_idx], " with face id ", face_id)
                     push!(result.convex_hull_bounds, points[:, point_idx])
                     push!(result.hull_indices, point_idx)
                     insert_point_and_update_mesh(mesh, point_idx, face_id, points, dim)
