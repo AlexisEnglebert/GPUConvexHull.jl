@@ -3,12 +3,17 @@ using GPUConvexHull
 using KernelAbstractions
 using DataFrames, CSV, Dates
 
+backend = CPU()
+
 function run_and_save_benchmarks(version_name, n_dimension, N_sizes)
     df = DataFrame(N = Int[], Time_ms = Float64[], Allocs = Int[], Memory_MiB = Float64[])
 
     for N in N_sizes
         data = rand(n_dimension, N)
-        b = @benchmark GPUConvexHull.quick_hull(CPU(), $data) samples=5 evals=1
+        data_gpu = KernelAbstractions.allocate(backend, Float64, (n_dimension, N))
+        copy!(data_gpu, data)
+       
+        b = @benchmark GPUConvexHull.quick_hull(backend, $data) samples=5 evals=1
         
         push!(df, (
             N = N, 
