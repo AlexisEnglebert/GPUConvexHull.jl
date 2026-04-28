@@ -584,18 +584,25 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                     if n_segs == 0
                         break
                     end
-
+                    
+                    @timeit to "distance_to_face_kernel" begin
                     distances = KernelAbstractions.allocate(context.backend, Float64, n)
                     seg_to_face_map_gpu = KernelAbstractions.allocate(context.backend, Int64, length(current_unique_flags))
                     copyto!(seg_to_face_map_gpu, current_unique_flags)
                     
-                    #TODO: à la place d'utiliser le seg_to_face truc on utilise les flags, car les faces ont déjà été assignés .....
                     distance_to_face_kernel(context.backend, context.workgroup_size)(distances, restant, seg_id, seg_to_face_map_gpu, face_normals_gpu, face_offsets_gpu, dim, ndrange=n)
                     KernelAbstractions.synchronize(context.backend)
+                    end
+
+                    @timeit to "Propagate farthest point" begin
+
                     # On propage le point le plus loins à travers le segement (forward + backward pass)
                     prefix_max = segmented_scan(segment_mem_data_float, distances, rest_segment, ScanPrimitive.MaxOp(),  backward=false, inclusive=true, identity=typemin(Float64))
                     seg_max    = segmented_scan(segment_mem_data_float, prefix_max, rest_segment, ScanPrimitive.MaxOp(), backward=true,  inclusive=true, identity=typemin(Float64))
 
+                    end
+
+                    @timeit to "Mark farthest candidate" begin
                     cand_idx = KernelAbstractions.allocate(context.backend, Int64, n)
                     mark_farthest_candidate_kernel(context.backend, context.workgroup_size)(cand_idx, distances, seg_max, 1e-12, ndrange=n)
                     KernelAbstractions.synchronize(context.backend)
@@ -611,6 +618,7 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                     far_dist = Array(far_dist)
                     original_ids_cpu = Array(original_ids)
                     active_face_indices = findall(mesh.active)
+                    end
                 end
                  @timeit to "Add possible point to convexhull" begin
                 
