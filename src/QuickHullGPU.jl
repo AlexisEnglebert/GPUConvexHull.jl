@@ -10,7 +10,7 @@ using .MinMaxReduction
 
 const EPSILON = 1e-9
 const to = TimerOutput()
-#disable_timer!(to)
+disable_timer!(to)
 
 mutable struct QhullData
     vertices::Vector{Vector{Int}}
@@ -407,6 +407,7 @@ end
 end
 
 function get_visible_faces(mesh, point_idx, face_id, points)
+    #n_faces = length(mesh.active)
     visible_faces = Set{Int}()
     # On trouve toutes les faces visibles depuis le point à insérer (en gros toutes les faces pour lesquelles le point est du côté positif)
     # Pour ça on fait un BFS à partir de la face dont le point faisait partis de base, puis on regarde les voisins etc...
@@ -525,7 +526,6 @@ end
 
 function prepare_output(context, result)
     result.hull_points = sort_points_counter_clockwise(hcat(result.convex_hull_bounds...))
-    
     return result
 end
 
@@ -666,14 +666,22 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                 for cand in candidates
                     global_point_idx = original_ids_cpu[cand.local_idx]
                     global_face_id = active_face_indices[cpu_pts_to_face[cand.local_idx]]
+                    
+                    if global_face_id in to_remove_faces
+                        continue
+                    end
 
-                    visible_faces = get_visible_faces(mesh, global_point_idx, global_face_id, points)
+                    @timeit to "Get visible faces" begin
+                        visible_faces = get_visible_faces(mesh, global_point_idx, global_face_id, points)
+                    end
 
-                    conflict = false
-                    for f in visible_faces
-                        if f in to_remove_faces
-                            conflict = true
-                            break
+                    @timeit to "Conflict check" begin
+                        conflict = false
+                        for f in visible_faces
+                            if f in to_remove_faces
+                                conflict = true
+                                break
+                            end
                         end
                     end
 
