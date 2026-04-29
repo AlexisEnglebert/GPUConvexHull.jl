@@ -250,7 +250,7 @@ function compute_simplex(context::QuickHullContext, result::QhullResult, mesh::Q
     points_idx = Set{UInt32}()
 
     for d in 1:dim
-        res = min_max_reduce(points[d, :], 16, context.backend)
+        res = min_max_reduce(points[d, :], context.workgroup_size, context.backend)
 
         push!(points_idx, res.imin)
         push!(points_idx, res.imax)
@@ -550,7 +550,6 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
             n_total_flag = length(current_unique_flags)
             mapping = Dict(old => new for (new, old) in enumerate(current_unique_flags))
             mapped_flags_cpu = [mapping[f] for f in compacted_flags_cpu]
-
 
             mapped_flags_gpu = KernelAbstractions.allocate(context.backend, Int64, size(restant, 2))
             copyto!(mapped_flags_gpu, mapped_flags_cpu)

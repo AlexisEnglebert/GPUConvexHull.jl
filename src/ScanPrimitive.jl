@@ -14,7 +14,8 @@ struct AddOp end
 (::MaxOp)(a, b) = a > b ? a : b
 (::AddOp)(a, b) = a + b
 
-struct ScanPrimitiveContext{T, F, B}
+struct ScanPrimitiveContext{T, F, B, reverse_KER, circshift_KER, segmented_scan_inner_block_upsweep_KER, spread_head_flags_KER, 
+segmented_scan_second_level_KER, segmented_scan_inner_block_downsweep_KER, inclusive_KER}
     pyramid_partial_values::Vector{T}
     pyramid_partial_flags::Vector{F}
     pyramid_blocks_last_value::Vector{T}
@@ -29,6 +30,14 @@ struct ScanPrimitiveContext{T, F, B}
     nb_block::Int64
 
     layer_sizes::Vector{Int64}
+
+    reverse_ker::reverse_KER
+    circshift_ker::circshift_KER
+    segmented_scan_inner_block_upsweep_ker::segmented_scan_inner_block_upsweep_KER
+    spread_head_flags_ker::spread_head_flags_KER
+    segmented_scan_second_level_ker::segmented_scan_second_level_KER
+    segmented_scan_inner_block_downsweep_ker::segmented_scan_inner_block_downsweep_KER
+    inclusive_ker::inclusive_KER
 
 end
 
@@ -70,9 +79,19 @@ function create_scan_primitive_context(backend, val_type, flag_type, workgroup_s
 
     tmp_flags             = KernelAbstractions.zeros(backend, flag_type,  Int(n))
 
+
+    reverse_ker = reverse_kernel!(backend, workgroup_size)
+    circshift_ker = circshift_kernel(backend, workgroup_size)
+    segmented_scan_inner_block_upsweep_ker = segmented_scan_inner_block_upsweep!(backend, workgroup_size)
+    spread_head_flags_ker = spread_head_flags!(backend, workgroup_size)
+    segmented_scan_second_level_ker = segmented_scan_second_level_kernell!(backend, workgroup_size)
+    segmented_scan_inner_block_downsweep_ker = segmented_scan_inner_block_downsweep!(backend, workgroup_size)
+    inclusive_ker = inclusive_kernell!(backend, workgroup_size)
+
     return ScanPrimitiveContext(pyramid_partial_values, pyramid_partial_flags, pyramid_blocks_last_value,
      pyramid_blocks_last_flag, pyramid_blocks_last_tree_flag, tmp_flags, backend, workgroup_size, top_level_tree_size,
-     nb_block, layer_size)
+     nb_block, layer_size,reverse_ker,  circshift_ker, segmented_scan_inner_block_upsweep_ker, spread_head_flags_ker, segmented_scan_second_level_ker, 
+     segmented_scan_inner_block_downsweep_ker, inclusive_ker)
 end
 
 # Hmm à voir si on peut pas utiliser des grid en 3 dim pour rendre le calcul plus vite ?
@@ -330,9 +349,8 @@ end
     end
 end
 
-function segmented_scan(context::ScanPrimitiveContext{T, F, B}, values, flags, oplus::Op;
-    backward=false, inclusive=false, identity::eltype(T) = zero(eltype(T)) ) where{Op, T, F, B}
-
+function segmented_scan(context::ScanPrimitiveContext{T, F}, values, flags, oplus::Op;
+    backward=false, inclusive=false, identity::eltype(T) = zero(eltype(T)) ) where{T, F, Op}
 
     if eltype(values) != typeof(identity)
         error("Identity type must be the same as values type. Got:" , eltype(values), " instead of: ", typeof(identity))
