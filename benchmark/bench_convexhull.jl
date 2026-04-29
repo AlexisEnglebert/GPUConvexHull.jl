@@ -3,7 +3,7 @@ using GPUConvexHull
 using KernelAbstractions
 using DataFrames, CSV, Dates
 
-backend = CPU()
+backend = CUDABackend()
 
 function run_and_save_benchmarks(version_name, n_dimension, N_sizes)
     df = DataFrame(N = Int[], Time_ms = Float64[], Allocs = Int[], Memory_MiB = Float64[])
