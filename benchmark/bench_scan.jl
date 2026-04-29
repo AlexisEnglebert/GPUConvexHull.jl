@@ -21,5 +21,11 @@ mem_data = GPUConvexHull.ScanPrimitive.create_scan_primitive_context(backend, Fl
 res = @benchmark GPUConvexHull.segmented_scan(mem_data , $data1_gpu, $data2_gpu, GPUConvexHull.ScanPrimitive.AddOp(), identity=0.0)
 display(res)
 
+res = @benchmark GPUConvexHull.segmented_scan(mem_data , $data1_gpu, $data2_gpu, GPUConvexHull.ScanPrimitive.AddOp(), identity=0.0, inclusive=true)
+display(res)
+
 res = @benchmark GPUConvexHull.segmented_scan(mem_data , $data1_gpu, $data2_gpu, GPUConvexHull.ScanPrimitive.AddOp(), identity=0.0, backward=true)
+display(res)
+
+res = @benchmark GPUConvexHull.segmented_scan(mem_data , $data1_gpu, $data2_gpu, GPUConvexHull.ScanPrimitive.AddOp(), identity=0.0, backward=true, inclusive=true)
 display(res)

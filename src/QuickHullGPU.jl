@@ -33,14 +33,15 @@ struct QuickHullContext{BACKEND}
 end
 
 function create_quickhull_context(backend, workgroup_size, n_points)
-    
-    default_segment = KernelAbstractions.zeros(backend, Int64, n_points)
+    default_segment = zeros(n_points)
     default_segment[1] = 1
+    default_segment_gpu = KernelAbstractions.zeros(backend, Int64, n_points)
+    copy!(default_segment_gpu, default_segment)
 
     return QuickHullContext(
         backend,
         workgroup_size,
-        default_segment)
+        default_segment_gpu)
 end
 
 """
@@ -332,7 +333,7 @@ function propagate_segment_idx(context::QuickHullContext, segment_mem_data, segm
     return seg_id, Array(seg_id)[n]
 end
 
-@kernel function distance_to_face_kernel(distances, points, seg_id, seg_to_face_map, normals, offsets, @uniform dim)
+@kernel function distance_to_face_kernel(distances, points, seg_id, seg_to_face_map, normals, offsets)
     global_id = @index(Global)
     n = length(seg_id)
     if global_id <= n
@@ -346,14 +347,14 @@ end
     end
 end
 
-@kernel function mark_farthest_candidate_kernel(cand_idx, distances, seg_max, @uniform eps)
-    i = @index(Global)
-    if i <= length(cand_idx)
-        m = seg_max[i]
-        if m > 0 && abs(distances[i] - m) <= eps
-            cand_idx[i] = i
+@kernel function mark_farthest_candidate_kernel(cand_idx, distances, seg_max)
+    global_index = @index(Global)
+    if global_index <= length(cand_idx)
+        m = seg_max[global_index]
+        if m > 0 && abs(distances[global_index] - m) <= EPSILON
+            cand_idx[global_index] = global_index
         else
-            cand_idx[i] = 0
+            cand_idx[global_index] = 0
         end
     end
 end
@@ -590,29 +591,30 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                     seg_to_face_map_gpu = KernelAbstractions.allocate(context.backend, Int64, length(current_unique_flags))
                     copyto!(seg_to_face_map_gpu, current_unique_flags)
                     
-                    distance_to_face_kernel(context.backend, context.workgroup_size)(distances, restant, seg_id, seg_to_face_map_gpu, face_normals_gpu, face_offsets_gpu, dim, ndrange=n)
+                    distance_to_face_kernel(context.backend, context.workgroup_size)(distances, restant, seg_id, seg_to_face_map_gpu, face_normals_gpu, face_offsets_gpu, ndrange=n)
                     KernelAbstractions.synchronize(context.backend)
                     end
 
                     @timeit to "Propagate farthest point" begin
-
-                    # On propage le point le plus loins à travers le segement (forward + backward pass)
-                    prefix_max = segmented_scan(segment_mem_data_float, distances, rest_segment, ScanPrimitive.MaxOp(),  backward=false, inclusive=true, identity=typemin(Float64))
-                    seg_max    = segmented_scan(segment_mem_data_float, prefix_max, rest_segment, ScanPrimitive.MaxOp(), backward=true,  inclusive=true, identity=typemin(Float64))
+                    # On propage le point le plus loins et on le met au début du segment.
+                        prefix_max = segmented_scan(segment_mem_data_float, distances, rest_segment, ScanPrimitive.MaxOp(),  backward=false, inclusive=true, identity=typemin(Float64))
+                        seg_max    = segmented_scan(segment_mem_data_float, prefix_max, rest_segment, ScanPrimitive.MaxOp(), backward=true,  inclusive=true, identity=typemin(Float64))
 
                     end
 
                     @timeit to "Mark farthest candidate" begin
                     cand_idx = KernelAbstractions.allocate(context.backend, Int64, n)
-                    mark_farthest_candidate_kernel(context.backend, context.workgroup_size)(cand_idx, distances, seg_max, 1e-12, ndrange=n)
+                    mark_farthest_candidate_kernel(context.backend, context.workgroup_size)(cand_idx, distances, seg_max, ndrange=n)
                     KernelAbstractions.synchronize(context.backend)
-
+ 
+                    #ts1 = now()
                     prefix_far = segmented_scan(segment_mem_data_int, cand_idx, rest_segment, ScanPrimitive.MaxOp(), backward=false, inclusive=true, identity=typemin(Int64))
                     far_idx_p  = segmented_scan(segment_mem_data_int, prefix_far, rest_segment, ScanPrimitive.MaxOp(), backward=true,  inclusive=true, identity=typemin(Int64))
 
                     far_idx  = KernelAbstractions.allocate(context.backend, Int64,  n_segs)
                     far_dist = KernelAbstractions.allocate(context.backend, Float64, n_segs)
                     compact_data_to_segment_kernel(context.backend, context.workgroup_size)(far_idx, far_dist, rest_segment, seg_id, far_idx_p, seg_max, ndrange=n)
+                    
 
                     far_idx = Array(far_idx)
                     far_dist = Array(far_dist)
