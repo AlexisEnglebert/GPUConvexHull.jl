@@ -10,7 +10,7 @@ using .MinMaxReduction
 
 const EPSILON = 1e-9
 const to = TimerOutput()
-disable_timer!(to)
+#disable_timer!(to)
 
 mutable struct QhullData
     vertices::Vector{Vector{Int}}
