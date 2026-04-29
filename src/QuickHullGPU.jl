@@ -333,7 +333,7 @@ function propagate_segment_idx(context::QuickHullContext, segment_mem_data, segm
     return seg_id, Array(seg_id)[n]
 end
 
-@kernel function distance_to_face_kernel(distances, points, seg_id, seg_to_face_map, normals, offsets)
+@kernel function distance_to_face_kernel(distances, points, seg_id, seg_to_face_map, normals, offsets, @uniform dim)
     global_id = @index(Global)
     n = length(seg_id)
     if global_id <= n
@@ -591,7 +591,7 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                     seg_to_face_map_gpu = KernelAbstractions.allocate(context.backend, Int64, length(current_unique_flags))
                     copyto!(seg_to_face_map_gpu, current_unique_flags)
                     
-                    distance_to_face_kernel(context.backend, context.workgroup_size)(distances, restant, seg_id, seg_to_face_map_gpu, face_normals_gpu, face_offsets_gpu, ndrange=n)
+                    distance_to_face_kernel(context.backend, context.workgroup_size)(distances, restant, seg_id, seg_to_face_map_gpu, face_normals_gpu, face_offsets_gpu, dim, ndrange=n)
                     KernelAbstractions.synchronize(context.backend)
                     end
 
