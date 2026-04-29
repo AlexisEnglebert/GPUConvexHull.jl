@@ -634,6 +634,7 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                 sort!(candidates, by = x -> x.dist, rev = true)
 
                 # Getting indenpendant points to add to void add conflict
+                #=
                 to_remove_faces = Set{Int}()
                 points_to_insert = Tuple{Int64, Int64}[]
 
@@ -656,13 +657,16 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                         push!(points_to_insert, (global_point_idx, global_face_id))
                         union!(to_remove_faces, visible_faces)
                     end
-                end
+                end =#
 
-                for (point_idx, face_id) in points_to_insert
-                    push!(result.convex_hull_bounds, points[:, point_idx])
-                    push!(result.hull_indices, point_idx)
-                    insert_point_and_update_mesh(mesh, point_idx, face_id, points, dim)
-                end
+                #for (point_idx, face_id) in points_to_insert
+                    global_point_idx = original_ids_cpu[candidates[1].local_idx]
+                    local_face_idx = current_unique_flags[candidates[1].seg_idx]
+                    global_face_id = active_face_indices[local_face_idx]
+                    push!(result.convex_hull_bounds, points[:, global_point_idx])
+                    push!(result.hull_indices, global_point_idx)
+                    insert_point_and_update_mesh(mesh, global_point_idx, global_face_id, points, dim)
+                #end
 
                 n_active = sum(mesh.active)
                 active_normals = zeros(Float64, dim, n_active)
