@@ -4,21 +4,32 @@ version = "0.1.0"
 authors = ["Alexis Englebert <englebert.alexis@gmail.com>"]
 
 [deps]
+AcceleratedKernels = "6a4ca0a5-0e36-4168-a932-d9be78d558f1"
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 ProfileView = "c46f51b8-102a-5cf2-8d2c-8597cb0e0da7"
 Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 TimerOutputs = "a759f4b9-e2f1-59dc-863e-4aeb61b1ea8f"
 
 [compat]
+AcceleratedKernels = "0.4.3"
 BenchmarkTools = "1.8.0"
 CSV = "0.10.16"
+CUDA = "6.0.0"
 DataFrames = "1.8.2"
+Dates = "1.11.0"
 KernelAbstractions = "0.9.41"
 LinearAlgebra = "1.11, 1.12.0"
 ProfileView = "1.10.3"
 Revise = "3.14.2"
+StaticArrays = "1.9.18"
 TimerOutputs = "0.5.29"
+
+[extras]
+CUDA_Runtime_jll = "76a88914-d11a-5bdc-97e0-2f5a05c973a2"
