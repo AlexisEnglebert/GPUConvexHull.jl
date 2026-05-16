@@ -439,8 +439,11 @@ end
 function insert_point_and_update_mesh(mesh::QhullData, point_idx::Int64, face_id::Int64, points, dim::Int64)
     # Maintenant qu'on a nos faces visible on trouve l'horizon entre les faces visibles et les faces non visibles.
     #TODO: paralléliser sur GPU ?
+    @timeit to "Get visible faces" begin
     visible_faces = get_visible_faces(mesh, point_idx, face_id, points)
+    end
 
+    @timeit to "Get Horizon ridges" begin
     horizon_ridges = Tuple{Vector{Int64}, Int64, Int64}[]
     for f in visible_faces
         for (k, neighbor) in enumerate(mesh.neighbors[f])
@@ -451,7 +454,9 @@ function insert_point_and_update_mesh(mesh::QhullData, point_idx::Int64, face_id
         end
         mesh.active[f] = false
     end
+    end
 
+    @timeit to "Create faces" begin
     # Crée les nouvelles faces avec l'hyperplan généré
     new_face_indices = Int[]
     for (ridge_verts, invisible_neighbor, old_visible_face) in horizon_ridges
@@ -484,7 +489,9 @@ function insert_point_and_update_mesh(mesh::QhullData, point_idx::Int64, face_id
             end
         end
     end
+    end
 
+    @timeit to "Recompute neighbors" begin
     for i in 1:length(new_face_indices)
         f1 = new_face_indices[i]
         for j in (i+1):length(new_face_indices)
@@ -500,6 +507,7 @@ function insert_point_and_update_mesh(mesh::QhullData, point_idx::Int64, face_id
         ridge_neighbor_idx = horizon_ridges[i][2]
         k_base = findfirst(x -> x == point_idx, mesh.vertices[f1])
         mesh.neighbors[f1][k_base] = ridge_neighbor_idx
+    end
     end
 end
 
