@@ -474,16 +474,12 @@ function get_visible_faces(context::QuickHullContext, mesh::QhullData, segment_m
     face_idx = findall(==(1), mesh.active)
     
     visible_faces = face_idx[Array(gpu_visible_faces)]
-
-    return visible_faces
+    return vcat(visible_faces...)
 end
 
 # TODO: J'ai vu qu'il y avais moyens de faire un BFS sur GPU en utilisant une représentation RCS du graphe. À voir si j'ai le temps.
-function insert_point_and_update_mesh(context::QuickHullContext, mesh::QhullData, segment_mem_data_int, face_normals_gpu, face_offsets_gpu, point_idx::Int64, face_id::Int64, points, 
-    n_face_active_before_remodling::Int64, dim::Int64)
-    @timeit to "Get visible faces" begin
-    visible_faces = get_visible_faces(context, mesh, segment_mem_data_int, face_normals_gpu, face_offsets_gpu, point_idx, face_id, points, n_face_active_before_remodling)
-    end
+function insert_point_and_update_mesh(context::QuickHullContext, mesh::QhullData, point_idx::Int64, face_id::Int64, points, dim::Int64, visible_faces::Vector{Int})
+ 
     @timeit to "Get Horizon ridges" begin
     horizon_ridges = Tuple{Vector{Int64}, Int64, Int64}[]
     for f in visible_faces
@@ -708,7 +704,7 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                 @timeit to "Check candidates conflict" begin
                 to_remove_faces = Set{Int}()
                 to_remove_vertex = Set{Int}()
-                points_to_insert = Tuple{Int64, Int64}[]
+                points_to_insert = Tuple{Int64, Int64, Vector{Int}}[]
                 cpu_pts_to_face = Array(point_to_face_flags)
                 for cand in candidates
                     global_point_idx = original_ids_cpu[cand.local_idx]
@@ -747,19 +743,18 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                     end
 
                     if !conflict
-                        push!(points_to_insert, (global_point_idx, global_face_id))
+                        push!(points_to_insert, (global_point_idx, global_face_id, visible_faces))
                         union!(to_remove_faces, visible_faces)
                         union!(to_remove_vertex, candidate_vertices)
                     end
                 end
                 end
-                # TODO: ICI IL Y A UN GROSSE ERREUR
                 @timeit to "Insert in convex hull" begin
                 n_face_active_before_remodling = sum(mesh.active)
-                for (point_idx, face_id) in points_to_insert
+                for (point_idx, face_id, visible_faces) in points_to_insert
                     push!(result.convex_hull_bounds, points[:, point_idx])
                     push!(result.hull_indices, point_idx)
-                    insert_point_and_update_mesh(context, mesh, segment_mem_data_int, face_normals_gpu, face_offsets_gpu, point_idx, face_id, points, n_face_active_before_remodling, dim)
+                    insert_point_and_update_mesh(context, mesh,  point_idx, face_id, points, dim, visible_faces)
                 end
                 end
                 @timeit to "Get active faces normal & offset" begin
