@@ -194,7 +194,6 @@ end
 
     idx1 = (2*thread_id)-1
     idx2 = 2*thread_id
-
     if (2*global_id-1) <= size
         temp[idx1] = values[2*global_id-1]
         f[idx1] = flags[2*global_id-1]

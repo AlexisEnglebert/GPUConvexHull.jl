@@ -117,8 +117,14 @@ Returns a vector p, a permutation of data and a vector sp, a permutation of segm
 
 ```
 """
-function compact(context::QuickHullContext, segment_mem_data, flags, segments, data, original_ids, in_length, dim; compact_only_data=false)
-    p = segmented_scan(segment_mem_data,flags, context.default_segment , ScanPrimitive.AddOp())
+function compact(context::QuickHullContext, segment_mem_data, flags, segments, data, in_length, dim; original_ids=nothing, compact_only_data=false)
+    println("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&")
+    default_segment = zeros(in_length)
+    default_segment[1] = 1
+    default_segment_gpu = KernelAbstractions.zeros(context.backend, Int64, in_length)
+    copy!(default_segment_gpu, default_segment)
+
+    p = segmented_scan(segment_mem_data,flags, default_segment_gpu , ScanPrimitive.AddOp())
 
     p_last    = Vector{eltype(p)}(undef, 1)
     flag_last = Vector{eltype(flags)}(undef, 1)
@@ -130,10 +136,10 @@ function compact(context::QuickHullContext, segment_mem_data, flags, segments, d
     head_indices = KernelAbstractions.allocate(context.backend, Int64, in_length)
     segment_mask_kernel(context.backend, context.workgroup_size)(flags, p, head_indices, ndrange=in_length)
     KernelAbstractions.synchronize(context.backend)
-
+    println(";;;;;;;;;;;;;;;;;;;;;;")
     propagated_heads = segmented_scan(segment_mem_data, head_indices, segments, ScanPrimitive.MinOp(), backward=false, inclusive=true, identity=typemax(Int64))
 
-    out_points = KernelAbstractions.allocate(context.backend, Float64, Int.((dim, n)))
+    out_points = KernelAbstractions.allocate(context.backend, eltype(data), Int.((dim, n)))
     permute_data_kernel(context.backend, context.workgroup_size)(out_points, data, flags, p, dim, ndrange = in_length)
     KernelAbstractions.synchronize(context.backend)
 
@@ -376,7 +382,7 @@ end
         face_id = face_flags[global_id]
             acc = 0.0
         for d in 1:dim
-            acc += points[d, global_id] * normals[d, face_id]
+            acc += points[d, global_id] * normals[face_id, d]
         end
         distances[global_id] = acc + offsets[face_id]
     end
@@ -406,7 +412,20 @@ end
     end
 end
 
-function get_visible_faces(mesh, point_idx, face_id, points)
+@kernel function mark_visible_face(out, face_normal, face_offset, point, dim, @uniform n_face)
+    global_id = @index(Global)
+    if global_id <= n_face
+        dist = 0
+        for d in 1:dim
+            dist += face_normal[global_id, d] * point[d]
+        end
+        dist += face_offset[global_id]
+        out[global_id] = (dist > EPSILON) ? global_id : 0 
+    end
+end
+
+
+function get_vs_faces(mesh, point_idx, face_id, points)
     #n_faces = length(mesh.active)
     visible_faces = Set{Int}()
     # On trouve toutes les faces visibles depuis le point à insérer (en gros toutes les faces pour lesquelles le point est du côté positif)
@@ -414,35 +433,82 @@ function get_visible_faces(mesh, point_idx, face_id, points)
     queue = [face_id]
     push!(visible_faces, face_id)
     #println("Starting BFS with face id ", face_id)
+    n_face = sum(mesh.active)
+    println("n_face: ", n_face)
+    visited = falses(n_face)
     while !isempty(queue)
         current_face_id = popfirst!(queue)
-
+        if visited[current_face_id]
+            continue
+        end
+        visited[current_face_id] = true
         for neighbour in mesh.neighbors[current_face_id]
-            if neighbour == 0 || neighbour in visible_faces || mesh.active[neighbour] == false
+            if neighbour == 0 || mesh.active[neighbour] == false
                 continue
             end
 
             normal = mesh.normals[neighbour]
             offset = mesh.offsets[neighbour]
-
+            
+            println("Normal : ", normal)
+            println("Offset: ", offset)
+            println("qdist: ", signed_distance(normal, offset, points[:, point_idx]), " with: ", neighbour)
             if signed_distance(normal, offset, points[:, point_idx]) > EPSILON
-                push!(queue, neighbour)
                 push!(visible_faces, neighbour)
             end
+            push!(queue, neighbour)
         end
     end
 
     return visible_faces
 end
 
+
+function get_visible_faces(context::QuickHullContext, mesh::QhullData, segment_mem_data_int, face_normals_gpu, face_offsets_gpu, point_idx, face_id, points, n_face::Int64)
+    #test_faces = get_vs_faces(mesh, point_idx, face_id, points)
+    #println("Test faces ", test_faces)
+
+    ctx = create_scan_primitive_context(context.backend, Int64, Int64, context.workgroup_size, n_face)
+
+    #=println("Active: ", mesh.active)
+    println("n_active = ", n_face)
+    println("face_normals : ", face_normals_gpu)
+    println("Mesh normals: ", mesh.normals)
+    println("POINTS: ", points)=#
+    face_marker = KernelAbstractions.zeros(context.backend, Int64, n_face)
+    ##println("ON ENVOIT LE POINT: ", points[point_idx])
+    mark_visible_face(context.backend, context.workgroup_size)(face_marker, face_normals_gpu, face_offsets_gpu, points[:, point_idx], size(points, 1), n_face, ndrange=tuple(n_face))
+    println("face_markers : ", face_marker)
+    compact_mask = KernelAbstractions.allocate(context.backend, Int64, n_face)
+    create_flag_mask(context.backend, context.workgroup_size)(compact_mask, face_marker , ndrange=tuple(n_face))
+    ##println("compactmask : ", compact_mask)
+    ##println("CTX: ", ctx.layer_sizes)
+    
+    default_segment = zeros(n_face)
+    default_segment[1] = 1
+    default_segment_gpu = KernelAbstractions.zeros(context.backend, Int64, n_face)
+
+    gpu_visible_faces = compact(context, ctx, compact_mask, default_segment_gpu, face_marker, n_face, 1, compact_only_data=true)
+    println("gpu_visible_faces : ", gpu_visible_faces)
+    face_idx = findall(==(1), mesh.active)
+    
+    visible_faces = face_idx[Array(gpu_visible_faces)]
+
+    
+    println("GPU faces: ", visible_faces)
+    
+    return visible_faces
+end
+
 # TODO: J'ai vu qu'il y avais moyens de faire un BFS sur GPU en utilisant une représentation RCS du graphe. À voir si j'ai le temps.
-function insert_point_and_update_mesh(mesh::QhullData, point_idx::Int64, face_id::Int64, points, dim::Int64)
+function insert_point_and_update_mesh(context::QuickHullContext, mesh::QhullData, segment_mem_data_int, face_normals_gpu, face_offsets_gpu, point_idx::Int64, face_id::Int64, points, 
+    n_face_active_before_remodling::Int64, dim::Int64)
     # Maintenant qu'on a nos faces visible on trouve l'horizon entre les faces visibles et les faces non visibles.
     #TODO: paralléliser sur GPU ?
     @timeit to "Get visible faces" begin
-    visible_faces = get_visible_faces(mesh, point_idx, face_id, points)
+    visible_faces = get_visible_faces(context, mesh, segment_mem_data_int, face_normals_gpu, face_offsets_gpu, point_idx, face_id, points, n_face_active_before_remodling)
     end
-
+    println("//////////////////////////////////////////////")
     @timeit to "Get Horizon ridges" begin
     horizon_ridges = Tuple{Vector{Int64}, Int64, Int64}[]
     for f in visible_faces
@@ -516,10 +582,10 @@ end
     if global_id <= size(points, 2)
         max_d = EPSILON
         best_face = 0
-        for f in 1:size(normals, 2)
+        for f in 1:size(normals, 1)
             d = 0.0
             for d_i in 1:dim
-                d += normals[d_i, f] * points[d_i, global_id]
+                d += normals[f, d_i] * points[d_i, global_id]
             end
             d += offsets[f]
             if d > max_d
@@ -567,14 +633,18 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
             compute_simplex(context, result, mesh, points, dim)
         end
         n_active = length(mesh.active)
-        active_normals = hcat(mesh.normals...)
+        active_normals = permutedims(hcat(mesh.normals...))
         active_offsets = vcat(mesh.offsets...)
+        println("Mesh normals: ", mesh.normals)
+        println("Active normals : ", active_normals)
 
-        face_normals_gpu = KernelAbstractions.allocate(context.backend, Float64, (dim, n_active))
+        # On stock on row major, car sur GPU les trucs sont flatten 
+        face_normals_gpu = KernelAbstractions.allocate(context.backend, Float64, (n_active, dim))
         face_offsets_gpu = KernelAbstractions.allocate(context.backend, Float64, n_active)
         copyto!(face_normals_gpu, active_normals)
         copyto!(face_offsets_gpu, active_offsets)
 
+        println("NEW Face normals GPU : ", face_normals_gpu)
         
         face_flags_gpu = KernelAbstractions.allocate(context.backend, Int64, n_points)
         compact_flags_gpu = KernelAbstractions.allocate(context.backend, Int64, n_points)
@@ -584,8 +654,8 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
             assign_face_to_point_kernel(context.backend, context.workgroup_size)(face_flags_gpu, compact_flags_gpu, points, face_normals_gpu, face_offsets_gpu, dim, ndrange=n_points)
             KernelAbstractions.synchronize(context.backend)
         end
-        restant, original_ids, rest_segment, cp, cflags, cn = compact(context, segment_mem_data_int,compact_flags_gpu, context.default_segment, points, original_ids, n_points, dim)
-
+        restant, original_ids, rest_segment, cp, cflags, cn = compact(context, segment_mem_data_int,compact_flags_gpu, context.default_segment, points, original_ids=original_ids, n_points, dim)
+        println("RESTANT : ", restant)
 
         @timeit to "Remove points inside simplex" begin
             # Remove null flags
@@ -614,6 +684,7 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
         while size(restant, 2) > 0
             @timeit to "Quickhull looop" begin
                 #println("######### NEW ITTERATION $n_iter ############")
+                println("RESTANT : ", size(restant))
                  @timeit to "Get farthest points" begin
                     seg_id, n_segs = propagate_segment_idx(context, segment_mem_data_int,rest_segment)
                     n = size(restant, 2)
@@ -643,8 +714,8 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                     
                     compact_mask = KernelAbstractions.allocate(context.backend, Int64, n)
                     create_flag_mask(context.backend, context.workgroup_size)(compact_mask, cand_idx , ndrange=tuple(n))
-                    far_idx = compact(context, segment_mem_data_int, compact_mask, context.default_segment, cand_idx, original_ids, n, 1, compact_only_data=true)
-                    far_dist = compact(context, segment_mem_data_int, compact_mask, context.default_segment, seg_max, original_ids, n, 1, compact_only_data=true)
+                    far_idx = compact(context, segment_mem_data_int, compact_mask, context.default_segment, cand_idx, original_ids=original_ids, n, 1, compact_only_data=true)
+                    far_dist = compact(context, segment_mem_data_int, compact_mask, context.default_segment, seg_max, original_ids=original_ids, n, 1, compact_only_data=true)
                   
                     far_idx = Array(far_idx)
                     far_dist = Array(far_dist)
@@ -678,9 +749,9 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                     if global_face_id in to_remove_faces
                         continue
                     end
-
+                    n_face_active_before_remodling = sum(mesh.active)
                     @timeit to "Get visible faces" begin
-                        visible_faces = get_visible_faces(mesh, global_point_idx, global_face_id, points)
+                        visible_faces = get_visible_faces(context, mesh, segment_mem_data_int, face_normals_gpu, face_offsets_gpu, global_point_idx, global_face_id, points, n_face_active_before_remodling)
                     end
 
                     @timeit to "Conflict check" begin
@@ -699,16 +770,18 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                     end
                 end
                 end
-
+                println("------------------------------------------------------------------")
                 @timeit to "Insert in convex hull" begin
+                n_face_active_before_remodling = sum(mesh.active)
                 for (point_idx, face_id) in points_to_insert
                     push!(result.convex_hull_bounds, points[:, point_idx])
                     push!(result.hull_indices, point_idx)
-                    insert_point_and_update_mesh(mesh, point_idx, face_id, points, dim)
+                    insert_point_and_update_mesh(context, mesh, segment_mem_data_int, face_normals_gpu, face_offsets_gpu, point_idx, face_id, points, n_face_active_before_remodling, dim)
                 end
                 end
-
+                println("***********************************************")
                 @timeit to "Get active faces normal & offset" begin
+                #TODO: change directly to row order instead of doing premutedims
                 n_active = sum(mesh.active)
                 active_normals = zeros(Float64, dim, n_active)
                 active_offsets = zeros(Float64, n_active)
@@ -722,10 +795,11 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                 end
                 end
 
-                face_normals_gpu = KernelAbstractions.allocate(context.backend, Float64, (dim, n_active))
+                face_normals_gpu = KernelAbstractions.allocate(context.backend, Float64, (n_active, dim))
                 face_offsets_gpu = KernelAbstractions.allocate(context.backend, Float64, n_active)
-                copyto!(face_normals_gpu, active_normals)
+                copyto!(face_normals_gpu, permutedims(active_normals))
                 copyto!(face_offsets_gpu, active_offsets)
+
 
                 face_flags_gpu = KernelAbstractions.allocate(context.backend, Int64, n)
                 compact_flags_gpu = KernelAbstractions.allocate(context.backend, Int64, n)
@@ -743,7 +817,7 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                     copyto!(rest_segment, global_seg_reset)
 
                     # Now Remove points inside
-                    restant, original_ids, rest_segment, cp, cflags, cn = compact(context, segment_mem_data_int, compact_flags_gpu, rest_segment, restant, original_ids, n, dim)
+                    restant, original_ids, rest_segment, cp, cflags, cn = compact(context, segment_mem_data_int, compact_flags_gpu, rest_segment, restant, original_ids=original_ids, n, dim)
 
                     if length(restant) == 0
                         break
