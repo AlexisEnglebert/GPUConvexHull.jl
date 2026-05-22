@@ -8,8 +8,9 @@ function test_qhull(points, backend, expected)
 
     sol = GPUConvexHull.quick_hull(backend, gpu_pts)
 
-    sol_set = Set(eachcol(round.(sol.hull_points, digits=9)))
-    expected_set = Set(eachcol(round.(expected, digits=9)))
+    @show sol_set = Set(eachcol(round.(sol.hull_points, digits=9)))
+    @show expected_set = Set(eachcol(round.(expected, digits=9)))
+    
     @show sol_set
     @test isempty(setdiff(sol_set, expected_set)) && isempty(setdiff(expected_set, sol_set))
 end
