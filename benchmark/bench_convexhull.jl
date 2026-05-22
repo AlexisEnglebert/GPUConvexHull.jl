@@ -36,6 +36,6 @@ function save_benchmark_results(p, version_name)
     savefig(p, filename)
 end
 
-n_range = [10^2, 10^3, 10^4, 10^5, 10^6, 10^7]
+n_range = [10^2, 10^3, 10^4, 10^5, 10^6, 10^7,2*10^7, 3*10^7, 4*10^7]
 n_dimension = 3
 p = run_and_save_benchmarks("V1", n_dimension, n_range)

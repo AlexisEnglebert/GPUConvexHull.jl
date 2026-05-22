@@ -12,28 +12,60 @@ end
 
 # On dois définir c'est quoi le zéro de MinMax pour pouvoir gérer ça côté GPU
 # HORRIBLE 1H pour trouver ça, même les template en c++ c'est plus simple mdr
-Base.zero(::Type{MinMax{T, I}}) where {T, I} = MinMax{T, I}(typemax(T), zero(I), typemax(T), zero(I))
+Base.zero(::Type{MinMax{T, I}}) where {T, I} = MinMax{T, I}(typemax(T), zero(I), typemin(T), zero(I))
 
 @kernel function min_max_reduce_block_kernel(values, output, @uniform n)
-    global_id = @index(Global)
     thread_id = @index(Local)
     block_id  = @index(Group)
+    
+    global_offset = (block_id - 1) * (2 * first(@groupsize))
+
+    idx1 = global_offset + thread_id
+    idx2 = global_offset + thread_id + first(@groupsize)
 
     smin  = @localmem(eltype(values), first(@groupsize))
     smax  = @localmem(eltype(values), first(@groupsize))
     simin = @localmem(UInt32, first(@groupsize))
     simax = @localmem(UInt32, first(@groupsize))
 
-    if global_id ≤ n
-        smin[thread_id]  = values[global_id]
-        smax[thread_id]  = values[global_id]
-        simin[thread_id] = global_id
-        simax[thread_id] = global_id
+    if idx1 ≤ n
+        val1_min = values[idx1]
+        val1_max = values[idx1]
     else
-        smin[thread_id]  = typemax(eltype(values))
-        smax[thread_id]  = typemin(eltype(values))
-        simin[thread_id] = global_id
-        simax[thread_id] = global_id
+        val1_min = typemax(eltype(values))
+        val1_max = typemin(eltype(values))
+    end
+    
+    if idx2 ≤ n
+        val2_min = values[idx2]
+        val2_max = values[idx2]
+    else
+        val2_min = typemax(eltype(values))
+        val2_max = typemin(eltype(values))
+    end
+    
+    if val1_min < val2_min
+        smin[thread_id]  = val1_min
+        simin[thread_id] = idx1
+    else
+        smin[thread_id]  = val2_min
+        if idx2 ≤ n
+            simin[thread_id] = idx2
+        else
+            simin[thread_id] = idx1
+        end
+    end
+
+    if val1_max >= val2_max
+        smax[thread_id]  = val1_max
+        simax[thread_id] = idx1
+    else
+        smax[thread_id]  = val2_max
+        if idx2 ≤ n 
+            simax[thread_id] = idx2
+        else
+            simax[thread_id] = idx1
+        end
     end
     
     @synchronize()
@@ -118,7 +150,7 @@ Main.MinMaxReduction.MinMax{Int64, UInt32}(1, 0x00000001, 4, 0x00000004)
 """
 function min_max_reduce(values, workgroupsSize, backend)
     
-    n_groups = cld(length(values), workgroupsSize)
+    n_groups = cld(length(values), workgroupsSize*2)
     partial_minmax_block = KernelAbstractions.zeros(backend, MinMax{eltype(values), UInt32}, n_groups)
 
     min_max_reduce_block_kernel(backend, workgroupsSize)(values, partial_minmax_block, length(values), ndrange=n_groups*workgroupsSize)

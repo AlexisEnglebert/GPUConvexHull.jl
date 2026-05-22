@@ -118,7 +118,7 @@ Returns a vector p, a permutation of data and a vector sp, a permutation of segm
 ```
 """
 function compact(context::QuickHullContext, segment_mem_data, flags, segments, data, original_ids, in_length, dim; compact_only_data=false)
-    p = segmented_scan(segment_mem_data,flags, context.default_segment , ScanPrimitive.AddOp())
+    p = scan(segment_mem_data,flags, ScanPrimitive.AddOp())
 
     p_last    = Vector{eltype(p)}(undef, 1)
     flag_last = Vector{eltype(flags)}(undef, 1)
@@ -363,7 +363,7 @@ end
 function propagate_segment_idx(context::QuickHullContext, segment_mem_data, segments)
     n = length(segments)
     
-    seg_id = segmented_scan(segment_mem_data, segments, context.default_segment, ScanPrimitive.AddOp(), backward=false, inclusive=true)
+    seg_id = scan(segment_mem_data, segments, ScanPrimitive.AddOp(), backward=false, inclusive=true)
     KernelAbstractions.synchronize(context.backend)
     return seg_id, Array(seg_id)[n]
 end

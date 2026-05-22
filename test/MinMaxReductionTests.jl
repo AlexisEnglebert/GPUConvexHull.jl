@@ -80,6 +80,16 @@ using .ScanPrimitive
         @test out.imax == 6
     end
 
+    @testset "random test" begin
+        data = [0, 2, 3 ,4, 5, 4, 2 ,1 ,3 ,4 ,5 ,6 ,7 ,8 ,8 ,5 ,1 ,1 , 9]
+        out = min_max_reduce(data, 4, backend)
+
+        @test out.min == 0
+        @test out.imin == 1
+        @test out.max == 9
+        @test out.imax == 19
+    end
+
 @testset "Compact" begin
     backend = CPU()
 

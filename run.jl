@@ -14,7 +14,7 @@ gpu_pts = KernelAbstractions.zeros(backend, Float64, (n_dim, n_points))
 copyto!(gpu_pts, data)
 GPUConvexHull.quick_hull(backend, gpu_pts)
 
-n_points = 1_000_000
+n_points = 20_000_000
 n_dim    = 3
 data = rand(n_dim, n_points)
 gpu_pts = KernelAbstractions.zeros(backend, Float64, (n_dim, n_points))

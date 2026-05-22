@@ -1,4 +1,3 @@
-#using GLMakie
 using KernelAbstractions
 using GPUConvexHull
 using BenchmarkTools
