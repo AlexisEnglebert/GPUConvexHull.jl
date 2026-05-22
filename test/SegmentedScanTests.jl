@@ -17,6 +17,22 @@ function naive_segmented_scan(values, flags)
     return expected
 end
 
+@testset "scan" begin
+    backend = CPU()
+    @testset "Simple scan" begin
+        mem_data = GPUConvexHull.ScanPrimitive.create_scan_primitive_context(backend, Int64, Int64, 8, 4)
+        values = [1, 2, 3, 4]
+        expected = [0, 1, 3, 6]
+        @test Array(GPUConvexHull.ScanPrimitive.scan(mem_data, values, GPUConvexHull.ScanPrimitive.AddOp(), identity=0)) == expected
+    end
+
+    @testset "Simple scan multi-block" begin
+        mem_data = GPUConvexHull.ScanPrimitive.create_scan_primitive_context(backend, Int64, Int64, 2, 8)
+        values = [1, 2, 3, 4, 5, 6, 7, 8]
+        expected = [0, 1, 3, 6, 10, 15, 21, 28]
+        @test Array(GPUConvexHull.ScanPrimitive.scan(mem_data, values, GPUConvexHull.ScanPrimitive.AddOp(), identity=0)) == expected
+    end
+end
 @testset "Segmented Scan" begin
     backend = CPU()
     @testset "exclusive forward scan NO segment" begin

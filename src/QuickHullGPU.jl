@@ -127,12 +127,6 @@ function compact(context::QuickHullContext, segment_mem_data, flags, segments, d
     copyto!(flag_last, 1, flags, in_length, 1)
     n = Int(p_last[1]) + Int(flag_last[1]) # On ajoute le b[n] car on est en exclusive scan =))
 
-    head_indices = KernelAbstractions.allocate(context.backend, Int64, in_length)
-    segment_mask_kernel(context.backend, context.workgroup_size)(flags, p, head_indices, ndrange=in_length)
-    KernelAbstractions.synchronize(context.backend)
-
-    propagated_heads = segmented_scan(segment_mem_data, head_indices, segments, ScanPrimitive.MinOp(), backward=false, inclusive=true, identity=typemax(Int64))
-
     out_points = KernelAbstractions.allocate(context.backend, Float64, Int.((dim, n)))
     permute_data_kernel(context.backend, context.workgroup_size)(out_points, data, flags, p, dim, ndrange = in_length)
     KernelAbstractions.synchronize(context.backend)
@@ -140,6 +134,12 @@ function compact(context::QuickHullContext, segment_mem_data, flags, segments, d
     if compact_only_data
         return out_points
     end
+
+    head_indices = KernelAbstractions.allocate(context.backend, Int64, in_length)
+    segment_mask_kernel(context.backend, context.workgroup_size)(flags, p, head_indices, ndrange=in_length)
+    KernelAbstractions.synchronize(context.backend)
+
+    propagated_heads = segmented_scan(segment_mem_data, head_indices, segments, ScanPrimitive.MinOp(), backward=false, inclusive=true, identity=typemax(Int64))
 
     sp_out = KernelAbstractions.zeros(context.backend, Int64, n)
     permute_sp_kernel(context.backend, context.workgroup_size)(sp_out, propagated_heads, flags, p, ndrange=in_length)
@@ -586,7 +586,6 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
         end
         restant, original_ids, rest_segment, cp, cflags, cn = compact(context, segment_mem_data_int,compact_flags_gpu, context.default_segment, points, original_ids, n_points, dim)
 
-
         @timeit to "Remove points inside simplex" begin
             # Remove null flags
             compacted_flags_gpu = KernelAbstractions.allocate(context.backend, Int64, size(restant, 2))
@@ -672,7 +671,7 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                 points_to_insert = Tuple{Int64, Int64}[]
                 cpu_pts_to_face = Array(point_to_face_flags)
                 for cand in candidates
-                    global_point_idx = original_ids_cpu[cand.local_idx]
+                    global_point_idx = original_ids_cpu[cand.local_idx] #TODO orginial_ids est utilisé uniquement là, c'est un peu overkill.
                     global_face_id = active_face_indices[cpu_pts_to_face[cand.local_idx]]
                     
                     if global_face_id in to_remove_faces
