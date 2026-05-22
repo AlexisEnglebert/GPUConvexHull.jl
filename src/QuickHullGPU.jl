@@ -118,7 +118,7 @@ Returns a vector p, a permutation of data and a vector sp, a permutation of segm
 ```
 """
 function compact(context::QuickHullContext, segment_mem_data, flags, segments, data, original_ids, in_length, dim; compact_only_data=false)
-    p = segmented_scan(segment_mem_data,flags, context.default_segment , ScanPrimitive.AddOp())
+    p = scan(segment_mem_data,flags, ScanPrimitive.AddOp())
 
     p_last    = Vector{eltype(p)}(undef, 1)
     flag_last = Vector{eltype(flags)}(undef, 1)
@@ -131,8 +131,6 @@ function compact(context::QuickHullContext, segment_mem_data, flags, segments, d
     segment_mask_kernel(context.backend, context.workgroup_size)(flags, p, head_indices, ndrange=in_length)
     KernelAbstractions.synchronize(context.backend)
 
-    propagated_heads = segmented_scan(segment_mem_data, head_indices, segments, ScanPrimitive.MinOp(), backward=false, inclusive=true, identity=typemax(Int64))
-
     out_points = KernelAbstractions.allocate(context.backend, Float64, Int.((dim, n)))
     permute_data_kernel(context.backend, context.workgroup_size)(out_points, data, flags, p, dim, ndrange = in_length)
     KernelAbstractions.synchronize(context.backend)
@@ -140,6 +138,8 @@ function compact(context::QuickHullContext, segment_mem_data, flags, segments, d
     if compact_only_data
         return out_points
     end
+
+    propagated_heads = segmented_scan(segment_mem_data, head_indices, segments, ScanPrimitive.MinOp(), backward=false, inclusive=true, identity=typemax(Int64))
 
     sp_out = KernelAbstractions.zeros(context.backend, Int64, n)
     permute_sp_kernel(context.backend, context.workgroup_size)(sp_out, propagated_heads, flags, p, ndrange=in_length)
@@ -363,7 +363,7 @@ end
 function propagate_segment_idx(context::QuickHullContext, segment_mem_data, segments)
     n = length(segments)
     
-    seg_id = segmented_scan(segment_mem_data, segments, context.default_segment, ScanPrimitive.AddOp(), backward=false, inclusive=true)
+    seg_id = scan(segment_mem_data, segments, ScanPrimitive.AddOp(), backward=false, inclusive=true)
     KernelAbstractions.synchronize(context.backend)
     return seg_id, Array(seg_id)[n]
 end

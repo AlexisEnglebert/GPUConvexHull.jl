@@ -1,7 +1,7 @@
 module ScanPrimitive
 using KernelAbstractions
 
-export segmented_scan, create_scan_primitive_context
+export segmented_scan, create_scan_primitive_context, scan
 
 struct MinOp end
 struct MaxOp end
@@ -11,7 +11,14 @@ struct AddOp end
 (::MaxOp)(a, b) = a > b ? a : b
 (::AddOp)(a, b) = a + b
 
-struct ScanPrimitiveContext{T, F, B}
+struct ScanPrimitiveContext{B, VArr, FArr}
+    pyramid_partial_values::Vector{VArr}
+    pyramid_partial_flags::Vector{FArr}
+    pyramid_blocks_last_value::Vector{VArr}
+    pyramid_blocks_last_flag::Vector{FArr}
+    pyramid_blocks_last_tree_flag::Vector{FArr}
+
+    tmp_flags::FArr
     backend::B
     workgroup_size::Int64
 end
@@ -20,7 +27,29 @@ function create_scan_primitive_context(backend, val_type, flag_type, workgroup_s
     if !ispow2(workgroup_size)
         error("Workgroup size must be a power of two !")
     end 
-    return ScanPrimitiveContext{val_type, flag_type, typeof(backend)}(backend, workgroup_size)
+
+    n_per_block = 2*workgroup_size
+
+    layer_sizes = [n]
+    while layer_sizes[end] > n_per_block
+        push!(layer_sizes, cld(layer_sizes[end], n_per_block))
+    end
+
+    if length(layer_sizes) == 1
+        push!(layer_sizes, 1)
+    end
+
+    pyramid_partial_values        = [KernelAbstractions.allocate(backend, val_type, Int(size)) for size in layer_sizes[1:end-1]]
+    pyramid_partial_flags         = [KernelAbstractions.zeros(backend, flag_type,  Int(size)) for size in layer_sizes[1:end-1]]
+
+    pyramid_blocks_last_value     = [KernelAbstractions.allocate(backend, val_type, Int(size)) for size in layer_sizes[2:end]]
+    pyramid_blocks_last_flag      = [KernelAbstractions.zeros(backend, flag_type,  Int(size))  for size in layer_sizes[2:end]]
+    pyramid_blocks_last_tree_flag = [KernelAbstractions.zeros(backend, flag_type,  Int(size))  for size in layer_sizes[2:end]]
+
+    tmp_flags = KernelAbstractions.zeros(backend, flag_type, Int(n))
+
+    return ScanPrimitiveContext(pyramid_partial_values, pyramid_partial_flags, pyramid_blocks_last_value,
+        pyramid_blocks_last_flag, pyramid_blocks_last_tree_flag, tmp_flags, backend, workgroup_size)
 end
 
 @kernel function scan_inner_block_downsweep!(out, partial_values, offset_block, size::Integer, oplus::Op, ::Val{TREE_SIZE}, identity::T = 0) where {Op, T, TREE_SIZE}
@@ -399,9 +428,8 @@ end
     end
 end
 
-@kernel function circshift_kernel(output, input, shift)
+@kernel function circshift_kernel(output, input, shift, n)
     i = @index(Global)
-    n = length(input)
     if i <= n 
         j = mod1(i - shift, n) 
         output[i] = input[j]
@@ -426,13 +454,13 @@ end
     end
 end
 
-function scan(context::ScanPrimitiveContext{T, F}, values, oplus::Op;
-    backward=false, inclusive=false, identity::T = zero(T)) where{T, F, Op}
+function scan(context::ScanPrimitiveContext, values, oplus::Op;
+    backward=false, inclusive=false, identity = zero(eltype(values))) where{Op}
     return segmented_scan(context, values, nothing, oplus; backward=backward, inclusive=inclusive, identity=identity, segmented=false)
 end
 
-function segmented_scan(context::ScanPrimitiveContext{T, F}, values, flags, oplus::Op;
-    backward=false, inclusive=false, identity::T = zero(T), segmented=true) where{T, F, Op}
+function segmented_scan(context::ScanPrimitiveContext, values, flags, oplus::Op;
+    backward=false, inclusive=false, identity = zero(eltype(values)), segmented=true) where{Op}
 
     if eltype(values) != typeof(identity)
         error("Identity type must be the same as values type. Got:" , eltype(values), " instead of: ", typeof(identity))
@@ -449,11 +477,16 @@ function segmented_scan(context::ScanPrimitiveContext{T, F}, values, flags, oplu
 
     n = length(values_gpu)
 
+    if n > length(context.tmp_flags)
+        error("Memory preallocation is too low. Got an input of size $(n), but preallocated for $(length(context.tmp_flags))")
+        return -1
+    end
+
     local flags_gpu = flags
     if segmented
         if isa(flags, Vector) && KernelAbstractions.get_backend(flags) != context.backend
             @warn "Got a non GPU vector in flags, converting it to GPU array (slower)."
-            flags_gpu = KernelAbstractions.allocate(context.backend, F, length(flags))
+            flags_gpu = KernelAbstractions.allocate(context.backend, eltype(context.tmp_flags), length(flags))
             copyto!(flags_gpu, flags)
         end
     end
@@ -461,7 +494,7 @@ function segmented_scan(context::ScanPrimitiveContext{T, F}, values, flags, oplu
     local tmp_flags
     if backward
         if segmented
-            tmp_flags = KernelAbstractions.zeros(context.backend, F, n)
+            tmp_flags = context.tmp_flags
         end
         reverse_kernel!(context.backend, context.workgroup_size)(values_gpu, n, ndrange = size(values_gpu))
         KernelAbstractions.synchronize(context.backend)
@@ -470,7 +503,7 @@ function segmented_scan(context::ScanPrimitiveContext{T, F}, values, flags, oplu
             copyto!(tmp_flags, 1, flags_gpu, 1, n)
             KernelAbstractions.synchronize(context.backend)
 
-            circshift_kernel(context.backend, context.workgroup_size)(flags_gpu, tmp_flags, 1, ndrange=length(flags_gpu))
+            circshift_kernel(context.backend, context.workgroup_size)(flags_gpu, tmp_flags, 1, n, ndrange=n)
             KernelAbstractions.synchronize(context.backend)
         end
     end
@@ -490,20 +523,29 @@ function segmented_scan(context::ScanPrimitiveContext{T, F}, values, flags, oplu
     top_size = layer_size[end]
     top_level_tree_size = max(2, nextpow(2, top_size))
 
-    pyramid_partial_values        = [KernelAbstractions.allocate(context.backend, eltype(values_gpu), Int(size)) for size in layer_size[1:end-1]]
-    pyramid_blocks_last_value     = [KernelAbstractions.allocate(context.backend, eltype(values_gpu), Int(size)) for size in layer_size[2:end]]
+    pyramid_partial_values        = context.pyramid_partial_values
+    pyramid_blocks_last_value     = context.pyramid_blocks_last_value
 
     local pyramid_partial_flags, pyramid_blocks_last_flag, pyramid_blocks_last_tree_flag
     if segmented
-        pyramid_partial_flags         = [KernelAbstractions.zeros(context.backend, F,  Int(size)) for size in layer_size[1:end-1]]
-        pyramid_blocks_last_flag      = [KernelAbstractions.zeros(context.backend, F,  Int(size))  for size in layer_size[2:end]]
-        pyramid_blocks_last_tree_flag = [KernelAbstractions.zeros(context.backend, F,  Int(size))  for size in layer_size[2:end]]
+        pyramid_partial_flags         = context.pyramid_partial_flags
+        pyramid_blocks_last_flag      = context.pyramid_blocks_last_flag
+        pyramid_blocks_last_tree_flag = context.pyramid_blocks_last_tree_flag
     end
 
     n_layers = length(layer_size) - 1
     for level in 1:n_layers
-        fill!(pyramid_partial_values[level], identity)
-        fill!(pyramid_blocks_last_value[level], identity)
+        limit_current = min(layer_size[level] + elements_per_block, length(pyramid_partial_values[level]))
+        fill!(view(pyramid_partial_values[level], 1:limit_current), identity)
+        
+        limit_next = min(layer_size[level+1] + elements_per_block, length(pyramid_blocks_last_value[level]))
+        fill!(view(pyramid_blocks_last_value[level], 1:limit_next), identity)
+        
+        if segmented
+            fill!(view(pyramid_partial_flags[level], 1:limit_current), zero(eltype(flags_gpu)))
+            fill!(view(pyramid_blocks_last_flag[level], 1:limit_next), zero(eltype(flags_gpu)))
+            fill!(view(pyramid_blocks_last_tree_flag[level], 1:limit_next), zero(eltype(flags_gpu)))
+        end
     end
 
     current_input_values = values_gpu
