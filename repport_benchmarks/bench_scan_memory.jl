@@ -2,36 +2,43 @@ using GPUConvexHull
 using KernelAbstractions
 using DataFrames, CSV, Dates
 using BenchmarkTools
+using CUDA
 
-backend = CPU()
+backend = CUDABackend()
 
 function open_file(path)
     return parse.(Int, readlines(path))
 end
 
-data_size = [10, 100, 1000, 10_000, 100_000, 1_000_000]
+data_size = [10, 100, 1000, 10_000, 100_000, 1_000_000, 10_000_000] 
 n_calls = 10_000
 workgroup_size = 256
 
-df = DataFrame(N = Int[], Time_ms = Float64[])
+df = DataFrame(N = Int[], Time_ms = Float64[], time_std = Float64[])
 
 
 for sz in data_size
-    cpu_array = open_file("scan_data/$(sz)_input.txt")
+    all_array = open_file("scan_data/$(sz)_input.txt")
     gpu_array = KernelAbstractions.allocate(backend, Int64, sz)
-    copy!(gpu_array, cpu_array)
+    gpu_flags = KernelAbstractions.allocate(backend, Int64, sz)
+    copy!(gpu_array, all_array[1:sz])
+    copy!(gpu_flags, all_array[sz+1:sz*2])
+
     segment_mem_data_int = GPUConvexHull.ScanPrimitive.create_scan_primitive_context(backend, Int64, Int64, workgroup_size, sz)
     #Warmup
-    GPUConvexHull.ScanPrimitive.scan(segment_mem_data_int, gpu_array, GPUConvexHull.ScanPrimitive.AddOp())
-    GPUConvexHull.ScanPrimitive.scan(segment_mem_data_int, gpu_array, GPUConvexHull.ScanPrimitive.AddOp())
+    GPUConvexHull.ScanPrimitive.segmented_scan(segment_mem_data_int, gpu_array, gpu_flags, GPUConvexHull.ScanPrimitive.AddOp())
+    GPUConvexHull.ScanPrimitive.segmented_scan(segment_mem_data_int, gpu_array, gpu_flags, GPUConvexHull.ScanPrimitive.AddOp())
     
-
-    b = @benchmark GPUConvexHull.ScanPrimitive.scan($segment_mem_data_int, $gpu_array, GPUConvexHull.ScanPrimitive.AddOp()) samples=n_calls evals=1
-
+    run_times = Float64[]
+    for _ in 1:n_calls
+        t = @elapsed GPUConvexHull.ScanPrimitive.segmented_scan(segment_mem_data_int, gpu_array, gpu_flags, GPUConvexHull.ScanPrimitive.AddOp())
+        push!(run_times, t)
+    end
     push!(df, (
-            N = sz, 
-            Time_ms = median(b).time / 1e6, 
-    ))
+    N = sz, 
+    Time_ms = mean(run_times) * 1000, 
+    time_std  = std(run_times) * 1000
+))
 
 end 
 
