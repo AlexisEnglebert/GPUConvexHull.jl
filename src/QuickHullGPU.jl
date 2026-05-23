@@ -31,19 +31,12 @@ struct QuickHullContext{BACKEND}
     
     backend::BACKEND
     workgroup_size::Int64
-    default_segment::AbstractArray
 end
 
 function create_quickhull_context(backend, workgroup_size, n_points)
-    default_segment = zeros(n_points)
-    default_segment[1] = 1
-    default_segment_gpu = KernelAbstractions.zeros(backend, Int64, n_points)
-    copy!(default_segment_gpu, default_segment)
-
     return QuickHullContext(
         backend,
-        workgroup_size,
-        default_segment_gpu)
+        workgroup_size)
 end
 
 """
