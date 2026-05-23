@@ -12,7 +12,7 @@ const EPSILON = 1e-9
 const to = TimerOutput()
 disable_timer!(to)
 
-mutable struct QhullData
+mutable struct QuickhullData
     vertices::Vector{Vector{Int}}
     neighbors::Vector{Vector{Int}}
     normals::Vector{Vector{Float64}}
@@ -28,7 +28,6 @@ mutable struct QhullResult
 end
 
 struct QuickHullContext{BACKEND}
-    
     backend::BACKEND
     workgroup_size::Int64
 end
@@ -263,7 +262,7 @@ function flag_permute(context::QuickHullContext, flags, segments)
 end
 
 
-function compute_simplex(context::QuickHullContext, result::QhullResult, mesh::QhullData, points, dim::Int64)
+function compute_simplex(context::QuickHullContext, result::QhullResult, mesh::QuickhullData, points, dim::Int64)
     
     points_idx = Set{UInt32}()
 
@@ -420,7 +419,7 @@ function get_visible_faces(mesh, point_idx, face_id, points)
 end
 
 # TODO: J'ai vu qu'il y avais moyens de faire un BFS sur GPU en utilisant une représentation RCS du graphe. À voir si j'ai le temps.
-function insert_point_and_update_mesh(mesh::QhullData, point_idx::Int64, face_id::Int64, points, dim::Int64)
+function insert_point_and_update_mesh(mesh::QuickhullData, point_idx::Int64, face_id::Int64, points, dim::Int64)
     # Maintenant qu'on a nos faces visible on trouve l'horizon entre les faces visibles et les faces non visibles.
     #TODO: paralléliser sur GPU ?
     @timeit to "Get visible faces" begin
@@ -539,7 +538,7 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
         original_ids = KernelAbstractions.allocate(context.backend, Int64, n_points)
         copyto!(original_ids, original_ids_cpu)
 
-        mesh = mesh = QhullData(
+        mesh = mesh = QuickhullData(
             Vector{Int}[],
             Vector{Int}[],
             Vector{Float64}[],

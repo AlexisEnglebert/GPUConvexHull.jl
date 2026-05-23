@@ -166,6 +166,6 @@ function min_max_reduce(values, workgroupsSize, backend)
         KernelAbstractions.synchronize(backend)
         partial_minmax_block = remainder_output
     end
-    return Array(partial_minmax_block)[1] 
+    return Array(@view partial_minmax_block[end:end])[1] 
 end
 end
