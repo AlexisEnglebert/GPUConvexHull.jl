@@ -355,7 +355,8 @@ function propagate_segment_idx(context::QuickHullContext, segment_mem_data, segm
     
     seg_id = scan(segment_mem_data, segments, ScanPrimitive.AddOp(), backward=false, inclusive=true)
     KernelAbstractions.synchronize(context.backend)
-    return seg_id, Array(seg_id)[n]
+    last_val = Array(@view seg_id[n:n])[1]
+    return seg_id, last_val
 end
 
 @kernel function distance_to_face_kernel(distances, points, seg_id, face_flags, normals, offsets, @uniform dim)
@@ -636,7 +637,6 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                   
                     far_idx = Array(far_idx)
                     far_dist = Array(far_dist)
-                    original_ids_cpu = Array(original_ids)
                     active_face_indices = findall(mesh.active)
                     end
                 end
@@ -658,10 +658,13 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                 @timeit to "Check candidates conflict" begin
                 to_remove_faces = Set{Int}()
                 points_to_insert = Tuple{Int64, Int64}[]
-                cpu_pts_to_face = Array(point_to_face_flags)
-                for cand in candidates
-                    global_point_idx = original_ids_cpu[cand.local_idx] #TODO orginial_ids est utilisé uniquement là, c'est un peu overkill.
-                    global_face_id = active_face_indices[cpu_pts_to_face[cand.local_idx]]
+
+                cand_local_indices = [cand.local_idx for cand in candidates]
+                cand_global_ids = Array(@view original_ids[cand_local_indices])
+                cand_faces      = Array(@view point_to_face_flags[cand_local_indices])
+                for (i, cand) in enumerate(candidates)
+                    global_point_idx = cand_global_ids[i] #TODO orginial_ids est utilisé uniquement là, c'est un peu overkill.
+                    global_face_id = active_face_indices[cand_faces[i]]
                     
                     if global_face_id in to_remove_faces
                         continue
