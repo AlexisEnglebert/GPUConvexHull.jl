@@ -107,7 +107,7 @@ function compute_hyperplane(simplex_points)
     n_pts = size(simplex_points, 2)
     points = Array(simplex_points)
 
-    # Petit hack pour aller plus vite en 2d et 3d. (qhull fait ça jusque 8d, ici pas vrmt besoin)
+    # Petit hack pour aller plus vite en 2d et 3d. (qhull fait ça jusque 8d, ici pas vrmt besoin)
     if dim == 2
         a = points[:, 1]
         b = points[:, 2]
@@ -187,7 +187,7 @@ julia> flag_permute(.....)
 """
 function flag_permute(context::QuickHullContext, flags, segments)
     out_permutation = AcceleratedKernels.sortperm(flags, block_size=context.workgroup_size)
-    # Recreate segments heads
+    # Recreate segments heads
     rebuild_segments_kernel!(context.backend, context.workgroup_size)(segments, flags, out_permutation, ndrange=length(segments))
     return out_permutation
 end
@@ -226,7 +226,7 @@ function compute_simplex(context::QuickHullContext, result::QhullResult, mesh::Q
                 sq_distances = sum(abs2, V, dims=1)[:]
             else
                 B = pts_all[:, idx[2:end]] .- p0
-                residuals = V - B * (B \ V) # Parmis nos points centrés en V on projette nos points sur le sous-espace générés par idxs
+                residuals = V - B * (B \ V) # Parmis nos points centrés en V on projette nos points sur le sous-espace générés par idxs
                 sq_distances = sum(abs2, residuals, dims=1)[:]
             end
             max_sq_dist, best_loc = findmax(sq_distances)
@@ -314,8 +314,8 @@ end
 function get_visible_faces(mesh, point_idx, face_id, points)
     #n_faces = length(mesh.active)
     visible_faces = Set{Int}()
-    # On trouve toutes les faces visibles depuis le point à insérer (en gros toutes les faces pour lesquelles le point est du côté positif)
-    # Pour ça on fait un BFS à partir de la face dont le point faisait partis de base, puis on regarde les voisins etc...
+    # On trouve toutes les faces visibles depuis le point à insérer (en gros toutes les faces pour lesquelles le point est du côté positif)
+    # Pour ça on fait un BFS à partir de la face dont le point faisait partis de base, puis on regarde les voisins etc...
     queue = [face_id]
     push!(visible_faces, face_id)
     #println("Starting BFS with face id ", face_id)
@@ -342,7 +342,7 @@ end
 
 # TODO: J'ai vu qu'il y avais moyens de faire un BFS sur GPU en utilisant une représentation RCS du graphe. À voir si j'ai le temps.
 function insert_point_and_update_mesh(mesh::QuickhullData, point_idx::Int64, face_id::Int64, points, dim::Int64)
-    # Maintenant qu'on a nos faces visible on trouve l'horizon entre les faces visibles et les faces non visibles.
+    # Maintenant qu'on a nos faces visible on trouve l'horizon entre les faces visibles et les faces non visibles.
     #TODO: paralléliser sur GPU ?
     @timeit to "Get visible faces" begin
     visible_faces = get_visible_faces(mesh, point_idx, face_id, points)
@@ -455,7 +455,7 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
         result = QhullResult(zeros(Float64, dim, 0), Int64[], Vector{Float64}[])
         n_iter = 0
 
-        # All Allocations
+        # All Allocations
         original_ids_cpu = collect(1:n_points)
         original_ids = KernelAbstractions.allocate(context.backend, Int64, n_points)
         copyto!(original_ids, original_ids_cpu)
@@ -492,7 +492,7 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
         restant, original_ids, cp, cflags, cn = compact(context, segment_mem_data_int,compact_flags_gpu, points, original_ids, n_points, dim)
         rest_segment =  KernelAbstractions.zeros(context.backend, Int64, cn)
         @timeit to "Remove points inside simplex" begin
-            # Remove null flags
+            # Remove null flags
             compacted_flags_gpu = KernelAbstractions.allocate(context.backend, Int64, size(restant, 2))
             permute_indices_kernel(context.backend, context.workgroup_size)(compacted_flags_gpu, face_flags_gpu, cflags, cp, ndrange=n_points)
             KernelAbstractions.synchronize(context.backend)
@@ -568,8 +568,9 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                 sort!(candidates, by = x -> x.dist, rev = true)
                 end
 
-                # Getting indenpendant points to add to void add conflict
+                # Getting indenpendant points to add to void add conflict
                 @timeit to "Check candidates conflict" begin
+                to_remove_faces = Set{Int}()
                 points_to_insert = Tuple{Int64, Int64}[]
 
                 cand_local_indices = [cand.local_idx for cand in candidates]
@@ -578,7 +579,29 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                 for (i, cand) in enumerate(candidates)
                     global_point_idx = cand_global_ids[i] #TODO orginial_ids est utilisé uniquement là, c'est un peu overkill.
                     global_face_id = active_face_indices[cand_faces[i]]
-                    push!(points_to_insert, (global_point_idx, global_face_id))
+                    
+                    if global_face_id in to_remove_faces
+                        continue
+                    end
+
+                    @timeit to "Get visible faces" begin
+                        visible_faces = get_visible_faces(mesh, global_point_idx, global_face_id, points)
+                    end
+
+                    @timeit to "Conflict check" begin
+                        conflict = false
+                        for f in visible_faces
+                            if f in to_remove_faces
+                                conflict = true
+                                break
+                            end
+                        end
+                    end
+
+                    if !conflict
+                        push!(points_to_insert, (global_point_idx, global_face_id))
+                        union!(to_remove_faces, visible_faces)
+                    end
                 end
                 end
 
