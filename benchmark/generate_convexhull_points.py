@@ -53,13 +53,13 @@ def parse_args():
     parser.add_argument(
         "--low",
         type=float,
-        default=-10000000000,
+        default=-1000000,
         help="Lower bound of the uniform distribution. Defaults to 0.0.",
     )
     parser.add_argument(
         "--high",
         type=float,
-        default=10000000000.0,
+        default=1000000,
         help="Upper bound of the uniform distribution. Defaults to 1.0.",
     )
     parser.add_argument(
@@ -81,7 +81,7 @@ def write_points(path, rng, n_points, dimension, low, high, chunk_size, write_he
         while remaining > 0:
             count = min(remaining, chunk_size)
             points = rng.uniform(low, high, size=(count, dimension))
-            np.savetxt(file, points, fmt="%.18e")
+            np.savetxt(file, points, fmt="%.0f")
             remaining -= count
 
 

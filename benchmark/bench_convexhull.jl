@@ -2,7 +2,7 @@ using BenchmarkTools
 using GPUConvexHull
 using KernelAbstractions
 using DataFrames, CSV, Dates
-
+using CUDA
 backend = CUDABackend()
 
 function run_and_save_benchmarks(version_name, n_dimension, N_sizes)
@@ -11,7 +11,6 @@ function run_and_save_benchmarks(version_name, n_dimension, N_sizes)
     for N in N_sizes
         println("data/points_$(N)_d$(n_dimension).txt")
         data = GPUConvexHull.read_input_file("data/points_$(N)_d$(n_dimension).txt")
-        println(data)
         data_gpu = KernelAbstractions.allocate(backend, Float64, (n_dimension, N))
         copy!(data_gpu, data)
        
@@ -22,7 +21,7 @@ function run_and_save_benchmarks(version_name, n_dimension, N_sizes)
             Time_ms = median(b).time / 1e6, 
             Allocs = b.allocs, 
             Memory_MiB = b.memory / 1024^2,
-            Time_std = std(b)
+            Time_std = std(b).time / 1e6
         ))
     end
 
