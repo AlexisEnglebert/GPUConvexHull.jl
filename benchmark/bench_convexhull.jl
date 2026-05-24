@@ -6,10 +6,12 @@ using DataFrames, CSV, Dates
 backend = CUDABackend()
 
 function run_and_save_benchmarks(version_name, n_dimension, N_sizes)
-    df = DataFrame(N = Int[], Time_ms = Float64[], Allocs = Int[], Memory_MiB = Float64[])
+    df = DataFrame(N = Int[], Time_ms = Float64[], Allocs = Int[], Memory_MiB = Float64[], Time_std = Float64[])
 
     for N in N_sizes
-        data = rand(n_dimension, N)
+        println("data/points_$(N)_d$(n_dimension).txt")
+        data = GPUConvexHull.read_input_file("data/points_$(N)_d$(n_dimension).txt")
+        println(data)
         data_gpu = KernelAbstractions.allocate(backend, Float64, (n_dimension, N))
         copy!(data_gpu, data)
        
@@ -19,13 +21,13 @@ function run_and_save_benchmarks(version_name, n_dimension, N_sizes)
             N = N, 
             Time_ms = median(b).time / 1e6, 
             Allocs = b.allocs, 
-            Memory_MiB = b.memory / 1024^2
+            Memory_MiB = b.memory / 1024^2,
+            Time_std = std(b)
         ))
-        println("Fini pour N=$N")
     end
 
     date_str = Dates.format(now(), "yyyy-mm-dd_HH-MM")
-    filename = "bench_data_$(version_name)_$(date_str).csv"
+    filename = "bench_GPUConvexhull_$(date_str).csv"
     CSV.write(filename, df)
     return filename
 end
@@ -36,6 +38,6 @@ function save_benchmark_results(p, version_name)
     savefig(p, filename)
 end
 
-n_range = [10^2, 10^3, 10^4, 10^5, 10^6, 10^7,2*10^7, 3*10^7, 4*10^7]
+n_range = [10, 10^2, 10^3, 10^4, 10^5, 10^6, 10^7,2*10^7, 3*10^7, 4*10^7]
 n_dimension = 3
 p = run_and_save_benchmarks("V1", n_dimension, n_range)

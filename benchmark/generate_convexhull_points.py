@@ -47,18 +47,19 @@ def parse_args():
     parser.add_argument(
         "--header",
         action="store_true",
+        default=True,
         help="Write 'n_points dimension' as the first line.",
     )
     parser.add_argument(
         "--low",
         type=float,
-        default=0.0,
+        default=-10000000000,
         help="Lower bound of the uniform distribution. Defaults to 0.0.",
     )
     parser.add_argument(
         "--high",
         type=float,
-        default=1.0,
+        default=10000000000.0,
         help="Upper bound of the uniform distribution. Defaults to 1.0.",
     )
     parser.add_argument(
@@ -100,7 +101,7 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     for n_points in args.sizes:
-        path = os.path.join(args.output_dir, f"{args.prefix}_{n_points}_d{args.dimension}.txt")
+        path = os.path.join(args.output_dir, f"data/{args.prefix}_{n_points}_d{args.dimension}.txt")
         write_points(
             path,
             rng,
