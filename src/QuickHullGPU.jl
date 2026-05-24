@@ -38,23 +38,6 @@ function create_quickhull_context(backend, workgroup_size, n_points)
         workgroup_size)
 end
 
-"""
-segment_mask_kernel(b, p, out, identity_val)
-
-Nom un peu fancy du papier, ça permet juste de fill l'array out avec les index de p
-
-# Examples
-```jldoctest
-julia> a ....
-```
-"""
-@kernel function segment_mask_kernel(b, p, out)
-    i = @index(Global)
-    out[i] = typemax(Int64)
-    if b[i] == 1
-        out[i] = p[i] + 1
-    end
-end
 
 @kernel function permute_data_kernel(out::AbstractVecOrMat, data::AbstractVecOrMat, flags, perm, @uniform dim)
     global_id = @index(Global)
@@ -66,22 +49,6 @@ end
                 out[d, perm[global_id]+1] = data[d, global_id]
             end
         end
-    end
-end
-
-@kernel function permute_sp_kernel(sp_out, sp, flags, p)
-    id = @index(Global)
-    if flags[id] == 1
-        sp_out[p[id] + 1] = sp[id]
-    end
-end
-
-@kernel function detect_heads_kernel(new_segments, sp_out, n)
-    id = @index(Global)
-    if id == 1
-        new_segments[1] = 1
-    else
-        new_segments[id] = sp_out[id] != sp_out[id - 1] ? 1 : 0
     end
 end
 
@@ -180,38 +147,6 @@ end
 
 @inline function signed_distance(normal::AbstractVector, offset::Real, point::AbstractVector)
     return dot(normal, Array(point)) + offset
-end
-
-@kernel function mask_2d_kernel(output, data, n_flags)
-    i, j = @index(Global, NTuple)
-    output[i, j] = data[i] == j ? 1 : 0
-end
-
-@kernel function flag_permute_kernell(forwardScanArray, backwardScanArray, sh, flags, size, outPermutation)
-    global_id = @index(Global)
-
-    if global_id ≤ size
-        offset = 0
-        for idx=1 : flags[global_id]-1
-            offset += backwardScanArray[global_id, idx]
-        end
-        # Position finale = Le début du sous segment dans le segment  + position du head + le nombre de flag à gauche (la position du flag dans le sous segment).
-        outPermutation[global_id] = offset + sh[global_id] + (forwardScanArray[global_id, flags[global_id]] - 1)
-    end
-end
-
-@kernel function add_segment_kernel(backscanArray, segments, sh, n_flags)
-    id = @index(Global)
-
-    if id <= size(backscanArray, 1)
-        loc = 0
-        for i = 1:(n_flags-1)
-            loc += backscanArray[id, i]
-            if loc > 0 && (sh[id] + loc) == id
-                segments[id] = 1
-            end
-        end
-    end
 end
 
 # TODO à voir si c'est vraiment utile ou pas.
@@ -339,20 +274,10 @@ end
     end
 end
 
-function propagate_segment_idx(context::QuickHullContext, segment_mem_data, segments)
-    n = length(segments)
-    
-    seg_id = scan(segment_mem_data, segments, ScanPrimitive.AddOp(), backward=false, inclusive=true)
-    KernelAbstractions.synchronize(context.backend)
-    last_val = Array(@view seg_id[n:n])[1]
-    return seg_id, last_val
-end
-
-@kernel function distance_to_face_kernel(distances, points, seg_id, face_flags, normals, offsets, @uniform dim)
+@kernel function distance_to_face_kernel(distances, points, face_flags, normals, offsets, @uniform dim)
     global_id = @index(Global)
-    n = length(seg_id)
+    n = length(points)
     if global_id <= n
-        segment_id = seg_id[global_id]
         face_id = face_flags[global_id]
             acc = 0.0
         for d in 1:dim
@@ -593,7 +518,7 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
             @timeit to "Quickhull looop" begin
                 #println("######### NEW ITTERATION $n_iter ############")
                  @timeit to "Get farthest points" begin
-                    seg_id, n_segs = propagate_segment_idx(context, segment_mem_data_int,rest_segment)
+                    n_segs = AcceleratedKernels.reduce((x, y) -> x+y, rest_segment; init=0, neutral=0, block_size=context.workgroup_size)
                     n = size(restant, 2)
                     
                     if n_segs == 0
@@ -603,7 +528,7 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                     @timeit to "distance_to_face_kernel" begin
                     distances = KernelAbstractions.allocate(context.backend, Float64, n)
                     
-                    distance_to_face_kernel(context.backend, context.workgroup_size)(distances, restant, seg_id, point_to_face_flags, face_normals_gpu, face_offsets_gpu, dim, ndrange=n)
+                    distance_to_face_kernel(context.backend, context.workgroup_size)(distances, restant, point_to_face_flags, face_normals_gpu, face_offsets_gpu, dim, ndrange=n)
                     KernelAbstractions.synchronize(context.backend)
                     end
 
