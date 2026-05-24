@@ -126,11 +126,7 @@ function compact(context::QuickHullContext, segment_mem_data, flags, data, origi
     if compact_only_data
         return out_points
     end
-
-    head_indices = KernelAbstractions.allocate(context.backend, Int64, in_length)
-    segment_mask_kernel(context.backend, context.workgroup_size)(flags, p, head_indices, ndrange=in_length)
-    KernelAbstractions.synchronize(context.backend)
-
+    
     out_ids = KernelAbstractions.allocate(context.backend, Int64, n)
     permute_indices_kernel(context.backend, context.workgroup_size)(out_ids, original_ids, flags, p, ndrange=in_length)
     KernelAbstractions.synchronize(context.backend)
