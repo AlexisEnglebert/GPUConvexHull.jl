@@ -649,7 +649,6 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
 
                 # Getting indenpendant points to add to void add conflict
                 @timeit to "Check candidates conflict" begin
-                to_remove_faces = Set{Int}()
                 points_to_insert = Tuple{Int64, Int64}[]
 
                 cand_local_indices = [cand.local_idx for cand in candidates]
@@ -658,29 +657,7 @@ function _quick_hull_implem(context::QuickHullContext, segment_mem_data_float::S
                 for (i, cand) in enumerate(candidates)
                     global_point_idx = cand_global_ids[i] #TODO orginial_ids est utilisé uniquement là, c'est un peu overkill.
                     global_face_id = active_face_indices[cand_faces[i]]
-                    
-                    if global_face_id in to_remove_faces
-                        continue
-                    end
-
-                    @timeit to "Get visible faces" begin
-                        visible_faces = get_visible_faces(mesh, global_point_idx, global_face_id, points)
-                    end
-
-                    @timeit to "Conflict check" begin
-                        conflict = false
-                        for f in visible_faces
-                            if f in to_remove_faces
-                                conflict = true
-                                break
-                            end
-                        end
-                    end
-
-                    if !conflict
-                        push!(points_to_insert, (global_point_idx, global_face_id))
-                        union!(to_remove_faces, visible_faces)
-                    end
+                    push!(points_to_insert, (global_point_idx, global_face_id))
                 end
                 end
 
