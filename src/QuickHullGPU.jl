@@ -282,25 +282,26 @@ function compute_simplex(context::QuickHullContext, result::QhullResult, mesh::Q
     # On utilise la méthode des points les plus éloignés. Enfaite on devrait arriver ici que si il nous manque 1 points
     # Si il manque plus d'un point c'est que les points d'entrés sont définies comme dans une dimension d alors qu'ils sont
     # dans la dimension d-1.
-    pts_all = Array(points)
+    if length(points_idx) < dim + 1
+        pts_all = Array(points)
+        while length(points_idx) < dim + 1
+            idx = collect(points_idx)
+            avail = setdiff(1:size(pts_all, 2), idx)
 
-    while length(points_idx) < dim + 1
-        idx = collect(points_idx)
-        avail = setdiff(1:size(pts_all, 2), idx)
+            p0 = pts_all[:, idx[1]]
+            V  = pts_all[:, avail] .- p0 # On centre les points sur p0
 
-        p0 = pts_all[:, idx[1]]
-        V  = pts_all[:, avail] .- p0 # On centre les points sur p0
+            if length(idx) == 1
+                sq_distances = sum(abs2, V, dims=1)[:]
+            else
+                B = pts_all[:, idx[2:end]] .- p0
+                residuals = V - B * (B \ V) # Parmis nos points centrés en V on projette nos points sur le sous-espace générés par idxs
+                sq_distances = sum(abs2, residuals, dims=1)[:]
+            end
+            max_sq_dist, best_loc = findmax(sq_distances)
+            push!(points_idx, UInt32(avail[best_loc]))
 
-        if length(idx) == 1
-            sq_distances = sum(abs2, V, dims=1)[:]
-        else
-            B = pts_all[:, idx[2:end]] .- p0
-            residuals = V - B * (B \ V) # Parmis nos points centrés en V on projette nos points sur le sous-espace générés par idxs
-            sq_distances = sum(abs2, residuals, dims=1)[:]
         end
-        max_sq_dist, best_loc = findmax(sq_distances)
-        push!(points_idx, UInt32(avail[best_loc]))
-
     end
 
     simplex_idx = collect(points_idx)[1:dim+1]
