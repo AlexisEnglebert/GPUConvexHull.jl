@@ -111,8 +111,8 @@ function compute_hyperplane(simplex_points)
 
     # Petit hack pour aller plus vite en 2d et 3d. (qhull fait ça jusque 8d, ici pas vrmt besoin)
     if dim == 2
-        a = points[:, 1]
-        b = points[:, 2]
+        a = @view points[:, 1]
+        b = @view points[:, 2]
         edge = b - a
         n = SVector{2,Float64}(-edge[2], edge[1])
         n = n / norm(n)
@@ -121,11 +121,12 @@ function compute_hyperplane(simplex_points)
     end
 
     if dim == 3
-        a = points[:, 1]
-        b = points[:, 2]
-        c = points[:, 3]
+        b = @view points[:, 2]
+        a = @view points[:, 1]
+        c = @view points[:, 3]
         ab = b - a
         ac = c - a
+        
         n = SVector{3,Float64}(
             ab[2]*ac[3] - ab[3]*ac[2],
             ab[3]*ac[1] - ab[1]*ac[3],
@@ -137,10 +138,10 @@ function compute_hyperplane(simplex_points)
     end
 
     M = hcat(points', ones(n_pts))
+    _, S, Vt = LAPACK.gesvd!('N', 'A', M)    
+    V = Vt'
 
-    U, S, V = svd(M, full=true)
-
-    last_eigen_vector = V[:, end]
+    last_eigen_vector = @view V[:, end]
     a = last_eigen_vector[1:end-1]
     b = last_eigen_vector[end]
 
