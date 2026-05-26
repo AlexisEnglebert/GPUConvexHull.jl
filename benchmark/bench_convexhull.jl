@@ -14,7 +14,7 @@ function run_and_save_benchmarks(version_name, n_dimension, N_sizes)
         data_gpu = KernelAbstractions.allocate(backend, Float64, (n_dimension, N))
         copy!(data_gpu, data)
        
-        b = @benchmark GPUConvexHull.quick_hull(backend, $data_gpu) samples=5 evals=1 seconds=5
+        b = @benchmark GPUConvexHull.quick_hull(backend, $data) samples=5 evals=1 seconds=5
         
         push!(df, (
             N = N, 
@@ -37,6 +37,7 @@ function save_benchmark_results(p, version_name)
     savefig(p, filename)
 end
 
-n_range = [10, 10^2, 10^3, 10^4, 10^5, 10^6, 10^7,2*10^7, 3*10^7, 4*10^7]
-n_dimension = 3
+n_range = [10, 10^2, 10^3, 10^4, 10^5, 10^6, 5*10^6, 5*10^6 + 5*10^5] #2*10^7, 3*10^7, 4*10^7, (4*10^7)+5*10^6, 5*10^7
+n_range = [10, 10^2, 10^3, 10^4, 10^5, 10^6, 10^7, 2*10^7, 3*10^7, 4*10^7, (4*10^7)+5*10^6, 5*10^7] 
+n_dimension = 2
 p = run_and_save_benchmarks("V1", n_dimension, n_range)
