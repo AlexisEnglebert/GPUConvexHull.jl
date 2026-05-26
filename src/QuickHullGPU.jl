@@ -145,7 +145,9 @@ function compute_hyperplane(simplex_points)
     a = last_eigen_vector[1:end-1]
     b = last_eigen_vector[end]
 
-    return a, b
+    n = a / norm(a)
+    offset = b / norm(a)
+    return Vector(n), offset
 end
 
 @inline function signed_distance(normal::AbstractVector, offset::Real, point::AbstractVector)
