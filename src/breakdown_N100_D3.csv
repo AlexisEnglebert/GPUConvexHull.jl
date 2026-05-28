@@ -1,0 +1,15 @@
+category,time_ms,percent,calls
+kernel_compact,4.3245,32.48,41
+scan_primitive,3.415,25.65,7
+cpu_mesh_update,1.4974,11.25,7
+cpu_candidates,1.0073,7.57,14
+kernel_sort,0.6415,4.82,7
+kernel_mark_farthest,0.4607,3.46,7
+kernel_assign,0.4308,3.24,8
+ak_reduce,0.3584,2.69,7
+compute_simplex,0.2877,2.16,1
+pcie_transfer,0.2515,1.89,14
+cpu_mesh_bfs,0.2221,1.67,40
+kernel_distance,0.2212,1.66,7
+gpu_alloc,0.1966,1.48,29
+sync_overhead,0.0,0.0,0
