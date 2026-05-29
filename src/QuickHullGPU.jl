@@ -8,7 +8,7 @@ using StaticArrays
 using .ScanPrimitive
 using .MinMaxReduction
 
-const EPSILON = 0.0001
+const EPSILON = 1e-9
 const to = TimerOutput()
 disable_timer!(to)
 
