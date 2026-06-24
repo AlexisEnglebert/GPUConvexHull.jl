@@ -6,7 +6,7 @@ Still in WIP.
 
 ## Example
 
-```code
+```jl
 using GPUConvexHull
 using KernelAbstractions
 
