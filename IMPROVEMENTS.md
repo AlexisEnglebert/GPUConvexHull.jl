@@ -129,6 +129,10 @@ These are the differences that make Qhull win even on CPU.
 - **Improvement:** compute `ε` adaptively from a one-pass coordinate min/max and
   the dimension. Low effort, high robustness payoff; partially closes the vertex
   gap independently of merging.
+- **But note:** an adaptive `ε` is still a *tolerance* — it only shifts the
+  fuzzy band, it never removes it. The principled alternative is to drop
+  tolerances entirely and use **exact predicates** (§2.8), which the rest of this
+  section's robustness items can then build on.
 
 ### 2.3 Redundant-vertex elimination
 
@@ -172,6 +176,94 @@ These are the differences that make Qhull win even on CPU.
   `DISTround·30000`) with `qh_joggle_restart` on any precision failure. This is
   GPU-friendly (one perturbation pass + retry) and avoids the entire
   thick-facet machinery, at the cost of a controlled perturbation of the result.
+
+### 2.8 Tolerance-free exact predicates (CGAL-style)
+
+The deepest fix for robustness is to stop using a tolerance at all. This is the
+**Exact Geometric Computation (EGC)** paradigm used by CGAL, Shewchuk's
+predicates, and Bruno Lévy's Geogram.
+
+**Key reframing.** Convex-hull / Delaunay geometry is, at its core, the
+evaluation of **determinants** — orientation (`is point p above facet F?`) and
+in-sphere tests are signed determinants of the input coordinates. What we
+actually need is the **sign** of that determinant, *not* its value. Robustness
+is therefore a sign-correctness problem, and a sign is a discrete quantity that
+can be computed *exactly* — so there is no inherent need for a tolerance.
+
+**The filtered cascade (fast common path, heavy artillery only when needed):**
+
+1. **Hardcoded predicates in 2D/3D.** Use Shewchuk-style adaptive-precision
+   `orient2d` / `orient3d` / `insphere`. These are the well-trodden, fast,
+   exact formulas.
+2. **General dimension `n`: LU decomposition** to evaluate the determinant in
+   floating point.
+3. **Static filter.** A floating-point `d×d` determinant is a sum of products of
+   `d` entries, so its rounding error is bounded by roughly
+   `eps_mach · C(d) · xmax^d` (with `xmax` the largest coordinate magnitude and
+   `C(d)` a dimension-dependent constant). **If `|det_float|` exceeds this bound,
+   the sign is certified correct** and we are done — this is the path taken
+   ~always.
+4. **Escalate to multiple precision** only when `|det_float|` falls *inside* the
+   error bound (i.e. too close to zero to trust). Recompute the determinant
+   exactly (expansion / bignum arithmetic) to get the true sign.
+5. **Exactly zero at full precision ⇒ genuine degeneracy.** Break the tie
+   consistently with **Simulation of Simplicity** (Edelsbrunner & Mücke): a
+   symbolic, infinitesimal perturbation `ε^i` of the coordinates that is
+   guaranteed to make every determinant non-zero while remaining globally
+   consistent — so coplanar/cospherical inputs are resolved deterministically
+   without ever materialising a numeric perturbation (unlike joggle, §2.7,
+   which perturbs the *actual* data and changes the result).
+
+**The hard part is the static filter.** Getting the error bound tight *and*
+sound is the engineering crux. Two schools:
+
+- **Static / semi-static filters** (Shewchuk, Lévy): derive the bound
+  analytically from the formula and the input magnitudes. Fast, but each
+  predicate's bound must be carefully derived. Bruno Lévy's **PCK (Predicate
+  Construction Kit)** in Geogram *generates* these robust formulas and their
+  filters automatically — but the result still needs care.
+- **Interval arithmetic** as a dynamic filter (CGAL's default): evaluate the
+  formula on intervals; if the resulting interval excludes zero, the sign is
+  certified. General and automatic, but **slow** — a large constant-factor tax
+  on every predicate, which matters here because predicates are the inner loop.
+
+**Why this is the right shape for a GPU library.** The escalation is *rare*:
+for ~20M points in 3D the exact path fires on the order of ~100 times — but
+without it the algorithm simply does not produce a correct hull. That rarity is
+exactly what makes this attractive for us:
+
+- The **fast path is pure floating-point** (LU + a static-filter comparison),
+  which is GPU-friendly and branch-coherent across a warp in the common case.
+- The **rare exact escalation** (bignum / SoS) is divergent and awkward on a
+  GPU — but because it is rare, it can be **deferred to the CPU**. This fits the
+  existing CPU/GPU split: flag the handful of "uncertain" predicates on the GPU,
+  resolve them exactly on the host. A GPU exact-arithmetic path is a later
+  option, not a prerequisite.
+
+**Scope / what it does and does not fix.**
+
+- ✅ Removes *all* tolerance-driven failure modes: no flipped facets, no
+  inconsistent visibility, no `ε`-tuning, scale-invariant by construction. This
+  subsumes §2.2 and most of §2.6.
+- ⚠️ It yields the **mathematically exact** hull. For *exactly* coplanar
+  structured data (cube faces, exactly-cospherical points) this *does* avoid the
+  spurious vertices a too-tight `ε` produces (det is exactly 0 ⇒ "on the plane",
+  not "outside"). But for generic near-coplanar data it keeps every truly-extreme
+  point, so it is **orthogonal to facet merging (§2.1)**: merging is about
+  *simplifying* the output (fewer facets via tolerance), exact predicates are
+  about *correctness* (right sign, no tolerance). To match Qhull's *count* you
+  still want merging; to match Qhull's *robustness* you want exact predicates.
+
+**References.**
+
+- J. R. Shewchuk, *Adaptive Precision Floating-Point Arithmetic and Fast Robust
+  Geometric Predicates* (1997).
+- H. Edelsbrunner & E. P. Mücke, *Simulation of Simplicity* (ACM TOG, 1990).
+- D. Engwirda, [`dengwirda/robust-predicate`](https://github.com/dengwirda/robust-predicate)
+  — "Robust geometric predicates without the agonising pain", works up to 4D.
+- B. Lévy, *Robustness and efficiency of geometric programs: The Predicate
+  Construction Kit (PCK)* (CAD, 2016); Geogram.
+- CGAL — *Exact Geometric Computation* paradigm, interval-arithmetic filters.
 
 ---
 
@@ -225,7 +317,10 @@ A pragmatic sequence that front-loads the wins relevant to the 5D blow-up:
 
 1. **Compact out dead faces** (§3, §0.3) — biggest memory win, low risk.
 2. **Adaptive `ε`** (§2.2) — low effort, closes part of the vertex gap, improves
-   robustness at all scales.
+   robustness at all scales. *Or* skip straight to the principled fix —
+   **filtered exact predicates** (§2.8): a static-filtered LU determinant on the
+   GPU fast path with rare CPU exact escalation, which removes tolerance tuning
+   entirely and is scale-invariant.
 3. **Ridge-hashed neighbor matching** (§1.2) — removes the `O(F²)` term on CPU.
 4. **Reuse scratch buffers** (§3) — constant-factor / GC win.
 5. **Facet merging + redundant-vertex elimination** (§2.1, §2.3) — the large
